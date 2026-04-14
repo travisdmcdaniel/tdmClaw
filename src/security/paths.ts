@@ -1,4 +1,4 @@
-import { resolve, normalize } from "path";
+import { resolve, normalize, sep } from "path";
 
 /**
  * Resolves an input path against the workspace root.
@@ -24,7 +24,7 @@ export function assertWithinWorkspace(
   const root = resolve(workspaceRoot);
   const target = resolve(resolvedPath);
 
-  if (!target.startsWith(root + "/") && target !== root) {
+  if (!target.startsWith(root + sep) && target !== root) {
     throw new Error(
       `Path "${resolvedPath}" is outside the workspace root. Access denied.`
     );
