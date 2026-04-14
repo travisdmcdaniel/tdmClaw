@@ -10,7 +10,7 @@ const log = childLogger("google");
 export type OAuthManager = {
   getAuthUrl(state: string): string;
   exchangeCode(code: string): Promise<GoogleTokenSet>;
-  getAuthenticatedClient(): ReturnType<typeof google.auth.OAuth2.prototype.constructor> | null;
+  getAuthenticatedClient(): InstanceType<typeof google.auth.OAuth2> | null;
   refreshIfNeeded(): Promise<void>;
 };
 
@@ -82,7 +82,7 @@ export function createOAuthManager(
     getAuthenticatedClient() {
       const stored = tokenStore.load();
       if (!stored) return null;
-      return oauth2Client as ReturnType<typeof google.auth.OAuth2.prototype.constructor>;
+      return oauth2Client as InstanceType<typeof google.auth.OAuth2>;
     },
 
     async refreshIfNeeded(): Promise<void> {

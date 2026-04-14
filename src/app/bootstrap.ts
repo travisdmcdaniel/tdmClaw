@@ -33,7 +33,7 @@ export async function bootstrap(): Promise<void> {
   await ensureDataDir(config.app.dataDir);
   const db = openDatabase(config.app.dataDir);
   await runMigrations(db);
-  onShutdown("database", () => db.close());
+  onShutdown("database", () => { db.close(); });
 
   // 4. Model provider and discovery
   const discovery = createModelDiscovery(config.models);

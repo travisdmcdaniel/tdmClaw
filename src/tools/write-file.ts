@@ -1,4 +1,5 @@
-import { writeFileSync, mkdirSync, dirname } from "fs";
+import { writeFileSync, mkdirSync } from "fs";
+import { dirname } from "path";
 import { assertWithinWorkspace, resolveWorkspacePath } from "../security/paths";
 import type { ToolHandler } from "../agent/tool-registry";
 
