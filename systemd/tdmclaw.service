@@ -1,0 +1,28 @@
+[Unit]
+Description=tdmClaw — self-hosted Telegram AI assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tdmclaw
+Group=tdmclaw
+WorkingDirectory=/opt/tdmclaw
+EnvironmentFile=/etc/tdmclaw/tdmclaw.env
+ExecStart=/usr/bin/node /opt/tdmclaw/dist/index.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tdmclaw
+
+# Limit resource usage on Pi
+MemoryMax=512M
+CPUQuota=80%
+
+# Reduce attack surface
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.env
+
+# Config with real credentials
+config/config.yaml
+config/config.yml
+config/config.json
+
+# Runtime data
+data/
+logs/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Google OAuth tokens (never commit)
+*.token.json
+token_*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Test output
+coverage/
+.vitest/
+
+# Misc
+*.log
+npm-debug.log*

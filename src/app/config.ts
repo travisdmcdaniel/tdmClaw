@@ -1,0 +1,154 @@
+import { readFileSync, existsSync } from "fs";
+import { resolve } from "path";
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
+import { resolveEnvRef } from "./env";
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+const ExecToolSchema = z.object({
+  enabled: z.boolean().default(true),
+  timeoutSeconds: z.number().int().positive().default(30),
+  maxOutputChars: z.number().int().positive().default(4096),
+  approvalMode: z.enum(["off", "owner-only"]).default("owner-only"),
+  blockedCommands: z.array(z.string()).default([]),
+  blockedPatterns: z.array(z.string()).default([]),
+});
+
+const AppConfigSchema = z.object({
+  app: z.object({
+    dataDir: z.string().default("./data"),
+    logLevel: z.enum(["debug", "info", "warn", "error"]).default("info"),
+    timezone: z.string().default("UTC"),
+  }),
+  telegram: z.object({
+    botToken: z.string().min(1),
+    allowedUserIds: z.array(z.string()).min(1),
+    allowedChatIds: z.array(z.string()).optional(),
+    polling: z.object({
+      enabled: z.boolean().default(true),
+      timeoutSeconds: z.number().int().positive().default(30),
+    }),
+  }),
+  workspace: z.object({
+    root: z.string().min(1),
+    writableRoots: z.array(z.string()).optional(),
+  }),
+  models: z.object({
+    provider: z.literal("openai-compatible"),
+    baseUrl: z.string().url(),
+    apiKey: z.string().optional(),
+    model: z.string().optional(),
+    fallbackModels: z.array(z.string()).default([]),
+    maxToolIterations: z.number().int().positive().default(4),
+    maxHistoryTurns: z.number().int().positive().default(6),
+    maxPromptTokensHint: z.number().int().positive().optional(),
+    discovery: z.object({
+      enabled: z.boolean().default(true),
+      pollIntervalSeconds: z.number().int().positive().default(60),
+    }),
+  }),
+  tools: z.object({
+    exec: ExecToolSchema,
+    applyPatch: z.object({
+      enabled: z.boolean().default(true),
+    }),
+  }),
+  google: z.object({
+    enabled: z.boolean().default(false),
+    clientId: z.string().default(""),
+    clientSecret: z.string().default(""),
+    redirectBaseUrl: z.string().default(""),
+    scopes: z.object({
+      gmailRead: z.boolean().default(true),
+      calendarRead: z.boolean().default(true),
+      calendarWrite: z.boolean().default(false),
+    }),
+  }),
+  scheduler: z.object({
+    enabled: z.boolean().default(true),
+    pollIntervalSeconds: z.number().int().positive().default(20),
+    catchUpWindowMinutes: z.number().int().nonnegative().default(10),
+  }),
+  auth: z.object({
+    callbackHost: z.string().default("127.0.0.1"),
+    callbackPort: z.number().int().positive().default(3000),
+    secureCookies: z.boolean().default(true),
+  }),
+});
+
+export type AppConfig = z.infer<typeof AppConfigSchema>;
+
+// ---------------------------------------------------------------------------
+// Loader
+// ---------------------------------------------------------------------------
+
+const CONFIG_PATH_ENV = "TDMCLAW_CONFIG_PATH";
+const DEFAULT_CONFIG_PATH = "config/config.yaml";
+
+/**
+ * Loads and validates application config.
+ * Searches for the config file at TDMCLAW_CONFIG_PATH or the default path.
+ * Resolves "env:VAR_NAME" references in string values.
+ */
+export function loadConfig(): AppConfig {
+  const configPath = resolve(
+    process.env[CONFIG_PATH_ENV] ?? DEFAULT_CONFIG_PATH
+  );
+
+  if (!existsSync(configPath)) {
+    throw new Error(
+      `Config file not found at "${configPath}". ` +
+        `Copy config/config.example.yaml to ${configPath} and fill in your values.`
+    );
+  }
+
+  const raw = parseYaml(readFileSync(configPath, "utf-8")) as unknown;
+  const resolved = resolveEnvRefs(raw as Record<string, unknown>);
+  const result = AppConfigSchema.safeParse(resolved);
+
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((i) => `  ${i.path.join(".")}: ${i.message}`)
+      .join("\n");
+    throw new Error(`Invalid configuration:\n${issues}`);
+  }
+
+  return result.data;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively walks a plain object tree and resolves "env:VAR" string values.
+ */
+function resolveEnvRefs(
+  obj: Record<string, unknown>,
+  path = ""
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const fieldPath = path ? `${path}.${key}` : key;
+    if (typeof val === "string") {
+      out[key] = resolveEnvRef(val, fieldPath);
+    } else if (Array.isArray(val)) {
+      out[key] = val.map((item, i) =>
+        typeof item === "string"
+          ? resolveEnvRef(item, `${fieldPath}[${i}]`)
+          : item
+      );
+    } else if (val !== null && typeof val === "object") {
+      out[key] = resolveEnvRefs(
+        val as Record<string, unknown>,
+        fieldPath
+      );
+    } else {
+      out[key] = val;
+    }
+  }
+  return out;
+}

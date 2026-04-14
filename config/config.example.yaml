@@ -1,0 +1,89 @@
+app:
+  # Directory for runtime data (SQLite database, etc.)
+  dataDir: ./data
+  # Log level: debug | info | warn | error
+  logLevel: info
+  # IANA timezone for the application and scheduler
+  timezone: America/New_York
+
+telegram:
+  # Bot token from @BotFather — use env var in production
+  botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN
+  # Telegram user IDs allowed to interact with the bot
+  allowedUserIds:
+    - "123456789"
+  # Optionally restrict to specific chat IDs as well
+  # allowedChatIds:
+  #   - "-100123456789"
+  polling:
+    enabled: true
+    timeoutSeconds: 30
+
+workspace:
+  # Absolute path to the workspace root. File tools are restricted to this tree.
+  root: /opt/tdmclaw/workspace
+  # Additional roots that are writable (must be sub-paths of root or separately allowed)
+  # writableRoots: []
+
+models:
+  provider: openai-compatible
+  # Base URL for the Ollama (or compatible) endpoint
+  baseUrl: http://127.0.0.1:11434
+  # API key — leave blank for Ollama
+  # apiKey: env:TDMCLAW_MODELS_API_KEY
+  # Preferred model name. If omitted or unavailable, the first discovered model is used.
+  # model: qwen2.5-coder-7b-instruct
+  # Ordered fallback models to try if the active model is unavailable
+  # fallbackModels:
+  #   - llama3.2
+  #   - mistral
+  maxToolIterations: 4
+  maxHistoryTurns: 6
+  # Soft token hint for history trimming (informational only in v1)
+  maxPromptTokensHint: 4000
+  discovery:
+    enabled: true
+    # How often to re-poll Ollama for available models
+    pollIntervalSeconds: 60
+
+tools:
+  exec:
+    enabled: true
+    timeoutSeconds: 30
+    maxOutputChars: 4096
+    # off | owner-only
+    approvalMode: owner-only
+    # Commands blocked regardless of other settings
+    blockedCommands:
+      - rm -rf /
+      - mkfs
+    # Regex patterns that block a command if matched
+    blockedPatterns:
+      - "sudo rm -rf"
+      - "> /dev/"
+  applyPatch:
+    enabled: true
+
+google:
+  enabled: false
+  clientId: env:TDMCLAW_GOOGLE_CLIENT_ID
+  clientSecret: env:TDMCLAW_GOOGLE_CLIENT_SECRET
+  # Base URL where Google redirects after OAuth — must be HTTPS and LAN-reachable
+  redirectBaseUrl: https://pi-auth.example.com
+  scopes:
+    gmailRead: true
+    calendarRead: true
+    calendarWrite: false
+
+scheduler:
+  enabled: true
+  # How often the scheduler wakes to check for due jobs (seconds)
+  pollIntervalSeconds: 20
+  # Jobs missed within this window after a restart will be caught up
+  catchUpWindowMinutes: 10
+
+auth:
+  # Host and port the local HTTP server listens on
+  callbackHost: 127.0.0.1
+  callbackPort: 3000
+  secureCookies: true
