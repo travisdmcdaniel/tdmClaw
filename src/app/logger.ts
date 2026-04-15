@@ -56,7 +56,21 @@ export function getLogger(): AppLogger {
 
 /**
  * Returns a child logger scoped to a subsystem.
+ * Lazy: defers resolution until the first log call so that module-level
+ * `const log = childLogger("x")` declarations don't require initLogger()
+ * to have already run at import time.
  */
 export function childLogger(subsystem: string): AppLogger {
-  return getLogger().child({ subsystem });
+  let resolved: AppLogger | null = null;
+  return new Proxy({} as AppLogger, {
+    get(_target, prop: string | symbol) {
+      if (!resolved) {
+        resolved = getLogger().child({ subsystem });
+      }
+      const value = (resolved as unknown as Record<string | symbol, unknown>)[prop];
+      return typeof value === "function"
+        ? (value as (...a: unknown[]) => unknown).bind(resolved)
+        : value;
+    },
+  });
 }

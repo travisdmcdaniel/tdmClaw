@@ -45,6 +45,7 @@ const AppConfigSchema = z.object({
     maxToolIterations: z.number().int().positive().default(4),
     maxHistoryTurns: z.number().int().positive().default(6),
     maxPromptTokensHint: z.number().int().positive().optional(),
+    requestTimeoutSeconds: z.number().int().positive().default(300),
     discovery: z.object({
       enabled: z.boolean().default(true),
       pollIntervalSeconds: z.number().int().positive().default(60),

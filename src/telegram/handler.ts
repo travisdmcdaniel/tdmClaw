@@ -37,6 +37,12 @@ export function buildMessageHandler(
     }
 
     // Plain conversational message — run the agent loop
+    // Send "typing" every 4s for the duration of the LLM call (indicator expires after 5s).
+    const typingInterval = setInterval(() => {
+      ctx.replyWithChatAction("typing").catch(() => undefined);
+    }, 4000);
+    void ctx.replyWithChatAction("typing");
+
     try {
       const response = await agentRuntime.runTurn({
         sessionId: `telegram:${chatId}`,
@@ -49,6 +55,8 @@ export function buildMessageHandler(
     } catch (err) {
       log.error({ err, userId, chatId }, "Agent turn failed");
       await ctx.reply(formatError(err));
+    } finally {
+      clearInterval(typingInterval);
     }
   };
 }

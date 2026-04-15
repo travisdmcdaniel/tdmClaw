@@ -46,15 +46,22 @@ export function createApiServer(
   return {
     async start(): Promise<void> {
       const { callbackHost, callbackPort } = config.auth;
-      server = serve({ fetch: app.fetch, hostname: callbackHost, port: callbackPort });
-      log.info({ host: callbackHost, port: callbackPort }, "API server started");
+      await new Promise<void>((resolve, reject) => {
+        server = serve({ fetch: app.fetch, hostname: callbackHost, port: callbackPort });
+        server.on("listening", () => {
+          log.info({ host: callbackHost, port: callbackPort }, "API server started");
+          resolve();
+        });
+        server.on("error", reject);
+      });
     },
 
     async stop(): Promise<void> {
       if (server) {
-        await new Promise<void>((resolve) => {
-          (server as { close?: (cb: () => void) => void }).close?.(() => resolve());
-          resolve(); // resolve immediately if close() is not async
+        await new Promise<void>((resolve, reject) => {
+          (server as { close?: (cb: (err?: Error) => void) => void }).close?.(
+            (err) => (err ? reject(err) : resolve())
+          );
         });
         log.info("API server stopped");
       }

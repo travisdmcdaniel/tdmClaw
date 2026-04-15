@@ -79,15 +79,27 @@ export function createModelProvider(
 
       log.debug({ model, messageCount: messages.length, toolCount: tools.length }, "Calling model");
 
+      const timeoutMs = config.requestTimeoutSeconds * 1000;
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), timeoutMs);
+
       let res: Response;
       try {
         res = await fetch(`${baseUrl}/v1/chat/completions`, {
           method: "POST",
           headers,
           body: JSON.stringify(body),
+          signal: abort.signal,
         });
       } catch (err) {
+        if (abort.signal.aborted) {
+          throw new Error(
+            `Model provider request timed out after ${config.requestTimeoutSeconds}s`
+          );
+        }
         throw new Error(`Model provider request failed: ${String(err)}`);
+      } finally {
+        clearTimeout(timer);
       }
 
       if (!res.ok) {
