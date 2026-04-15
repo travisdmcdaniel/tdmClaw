@@ -1,5 +1,4 @@
 import { google } from "googleapis";
-import type { AppConfig } from "../app/config";
 import type { TokenStore } from "./token-store";
 import type { GoogleTokenSet } from "./types";
 import { buildScopeList } from "./scopes";
@@ -14,20 +13,19 @@ export type OAuthManager = {
   refreshIfNeeded(): Promise<void>;
 };
 
-/**
- * Creates an OAuth2 manager for Google APIs.
- */
+// TODO (Phase 3): Replace with manual loopback flow implementation.
+// Credentials come from the google_client DB table, not config.
 export function createOAuthManager(
-  config: AppConfig["google"],
+  clientId: string,
+  clientSecret: string,
+  redirectUri: string,
+  scopes: string[],
   tokenStore: TokenStore
 ): OAuthManager {
-  const oauth2Client = new google.auth.OAuth2(
-    config.clientId,
-    config.clientSecret,
-    `${config.redirectBaseUrl}/oauth/google/callback`
-  );
+  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
 
-  const scopes = buildScopeList(config.scopes);
+  // buildScopeList is kept as a utility; callers pass scopes directly here.
+  void buildScopeList; // suppress unused-import warning until Phase 3 rewrite
 
   // If tokens are stored, pre-load them into the client
   const stored = tokenStore.load();

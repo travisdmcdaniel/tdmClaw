@@ -59,9 +59,6 @@ const AppConfigSchema = z.object({
   }),
   google: z.object({
     enabled: z.boolean().default(false),
-    clientId: z.string().default(""),
-    clientSecret: z.string().default(""),
-    redirectBaseUrl: z.string().default(""),
     scopes: z.object({
       gmailRead: z.boolean().default(true),
       calendarRead: z.boolean().default(true),
@@ -72,11 +69,6 @@ const AppConfigSchema = z.object({
     enabled: z.boolean().default(true),
     pollIntervalSeconds: z.number().int().positive().default(20),
     catchUpWindowMinutes: z.number().int().nonnegative().default(10),
-  }),
-  auth: z.object({
-    callbackHost: z.string().default("127.0.0.1"),
-    callbackPort: z.number().int().positive().default(3000),
-    secureCookies: z.boolean().default(true),
   }),
 });
 

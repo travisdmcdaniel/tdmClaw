@@ -4,7 +4,6 @@ import { loadDotenv } from "./env";
 import { registerShutdownHandlers, onShutdown } from "./shutdown";
 import { openDatabase } from "../storage/db";
 import { runMigrations } from "../storage/migrations";
-import { createApiServer } from "../api/server";
 import { createTelegramBot } from "../telegram/bot";
 import { startPolling } from "../telegram/polling";
 import { createAgentRuntime } from "../agent/runtime";
@@ -56,12 +55,7 @@ export async function bootstrap(): Promise<void> {
   // 7. Telegram bot
   const bot = createTelegramBot(config.telegram, agentRuntime, discovery, db);
 
-  // 8. Local HTTP server (OAuth callback + healthz)
-  const apiServer = createApiServer(config, db, bot);
-  await apiServer.start();
-  onShutdown("api-server", () => apiServer.stop());
-
-  // 9. Scheduler
+  // 8. Scheduler
   if (config.scheduler.enabled) {
     const scheduler = createSchedulerService({
       config,
@@ -73,7 +67,7 @@ export async function bootstrap(): Promise<void> {
     onShutdown("scheduler", () => scheduler.stop());
   }
 
-  // 10. Telegram polling (last — starts accepting messages)
+  // 9. Telegram polling (last — starts accepting messages)
   if (config.telegram.polling.enabled) {
     await startPolling(bot);
     onShutdown("telegram", () => bot.stop());
