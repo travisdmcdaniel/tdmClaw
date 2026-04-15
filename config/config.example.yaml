@@ -37,6 +37,7 @@ models:
   # fallbackModels:
   #   - llama3.2
   #   - mistral
+  requestTimeoutSeconds: 600
   maxToolIterations: 4
   maxHistoryTurns: 6
   # Soft token hint for history trimming (informational only in v1)

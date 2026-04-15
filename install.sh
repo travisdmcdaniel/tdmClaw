@@ -89,6 +89,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
     info "Keeping existing config. Skipping to build."
     SKIP_CONFIG=1
   fi
+else
+  cp "$SCRIPT_DIR/config/config.example.yaml" "$CONFIG_FILE"
 fi
 
 if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then

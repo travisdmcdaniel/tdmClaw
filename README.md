@@ -22,47 +22,23 @@ A lightweight, self-hosted AI assistant designed to run continuously as a servic
 
 ## Quick Start
 
-### 1. Clone and install
+### 1. Clone and run the installer
 
 ```bash
 git clone https://github.com/your-username/tdmclaw.git
 cd tdmclaw
-npm install
+bash install.sh
 ```
 
-### 2. Configure
+The installer will:
+- Check for Node.js 22+
+- Install npm dependencies
+- Copy `config/config.example.yaml` to `config/config.yaml` and prompt for required values (bot token, allowed user IDs, workspace path, Ollama URL)
+- Build the project
 
-Copy the example config and fill in your values:
+Then start with:
 
 ```bash
-cp config/config.example.yaml config/config.yaml
-```
-
-At minimum you need:
-
-```yaml
-telegram:
-  botToken: "your-bot-token"
-  allowedUserIds:
-    - "your-telegram-user-id"
-
-workspace:
-  root: /opt/tdmclaw/workspace
-
-models:
-  provider: openai-compatible
-  baseUrl: http://127.0.0.1:11434
-  discovery:
-    enabled: true
-    pollIntervalSeconds: 60
-```
-
-Sensitive values can also be provided as environment variables — see `.env.example`.
-
-### 3. Build and run
-
-```bash
-npm run build
 npm start
 ```
 
@@ -72,7 +48,9 @@ For development with hot reload:
 npm run dev
 ```
 
-### 4. Connect your Google account (optional)
+Sensitive values can also be provided as environment variables instead of in the config file — see `.env.example`.
+
+### 2. Connect your Google account (optional)
 
 In Telegram, send:
 
@@ -119,19 +97,17 @@ systemd/
 
 ### systemd service
 
+Run the installer as root and answer **yes** when prompted to set up the systemd service:
+
 ```bash
-# Copy the built app
-sudo mkdir -p /opt/tdmclaw
-sudo cp -r dist/ node_modules/ /opt/tdmclaw/
+sudo bash install.sh
+```
 
-# Create a dedicated user
-sudo useradd -r -s /bin/false tdmclaw
+This will create a dedicated service user, copy the built app and config to the install directory, write the systemd unit file, and start the service. To check status afterwards:
 
-# Install the service
-sudo cp systemd/tdmclaw.service /etc/systemd/system/
-sudo cp config/config.yaml /etc/tdmclaw/config.yaml
-sudo systemctl daemon-reload
-sudo systemctl enable --now tdmclaw
+```bash
+sudo systemctl status tdmclaw
+sudo journalctl -u tdmclaw -f
 ```
 
 ### LAN HTTPS for Google OAuth callbacks

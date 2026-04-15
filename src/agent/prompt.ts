@@ -23,7 +23,7 @@ export function buildSystemPrompt(
     "- Do not access files outside the workspace.",
     "- Prefer small, targeted reads over large ones.",
     "- If command output is large, summarize it rather than repeating it verbatim.",
-    "- Never expose secrets, tokens, or credentials in responses.",
+    "- Never expose secrets, authentication tokens, or credentials in responses.",
     "",
     `Workspace root: ${config.workspace.root}`,
     "",
