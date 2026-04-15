@@ -4,7 +4,7 @@
 
 - Project: tdmClaw
 - Document Type: Technical Design Document — Google OAuth Subsystem
-- Version: 0.1
+- Version: 0.2
 - Status: Draft
 - Related Documents: `tdmClaw_TDD.md`, `tdmClaw_IP.md`, `tdmClaw_GoogleOAuth_IP.md`
 - Target Runtime: Headless Ubuntu Server on Raspberry Pi
@@ -15,43 +15,75 @@
 
 ## 1. Purpose
 
-This document defines the full technical design for the Google OAuth subsystem in tdmClaw. It covers:
+This document defines the technical design for the Google OAuth subsystem in tdmClaw. It uses the same **loopback manual flow** that the gogcli CLI uses for its `--manual` mode: no HTTP server runs, no LAN hostname is required, and the entire OAuth flow happens through Telegram messages.
 
-- why specific OAuth credential and flow choices were made
-- the complete browser-based OAuth 2.0 authorization code flow adapted for a LAN-hosted server
-- state management and CSRF protection
-- token storage, retrieval, and refresh
-- the Gmail and Calendar API connector contracts
-- security and error handling requirements
-- testing strategy for all OAuth-related components
+It covers:
 
-This document assumes familiarity with the main `tdmClaw_TDD.md`. It is not a general OAuth tutorial; it is a decision record and engineering specification.
+- why the manual flow is correct for tdmClaw and why a hosted callback server is not needed
+- how the three-message Telegram flow works (setup → connect → complete)
+- handling user-uploaded `client_secret.json` files
+- state management, CSRF protection, and token storage
+- Gmail and Calendar API connector contracts
+- security and error-handling requirements
+- testing strategy
+
+This document assumes familiarity with the main `tdmClaw_TDD.md`.
 
 ---
 
-## 2. Context and Motivation
+## 2. Context and Key Design Decision
 
-### 2.1 Why Not Use the gogcli Pattern
+### 2.1 The Manual Loopback Flow
 
-The companion CLI tool `gogcli` (written in Go) handles OAuth using an **ephemeral local HTTP server** bound to `127.0.0.1:0`. The OS assigns a random available port; the redirect URI is `http://127.0.0.1:{port}/oauth2/callback`. This works because the CLI process and the browser run on the same machine, so `127.0.0.1` resolves correctly.
+Google's OAuth 2.0 specification for installed/desktop applications permits redirect URIs of the form `http://127.0.0.1:{port}/...` or `http://localhost:{port}/...` **without requiring anything to actually listen on that port**. The only requirement is that the user's browser follow the redirect — at which point the browser's address bar contains the full URL with the authorization code as a query parameter.
 
-tdmClaw runs on a Raspberry Pi as a headless `systemd` service. The user authorizes Google from a phone or laptop on the same LAN — a different device entirely. `127.0.0.1` from the user's browser resolves to *their own machine*, not the Pi. The ephemeral server trick cannot be used.
+This is the foundation of gogcli's `--manual` flow. The CLI:
 
-Instead, tdmClaw hosts a **persistent LAN-accessible HTTP server** that serves the OAuth callback. The redirect URI points to the Pi's LAN hostname (e.g., `https://pi-auth.local/oauth/google/callback`).
+1. Asks the OS for a free loopback port (by opening a listener and immediately closing it — the port number is what it wanted, not the listener).
+2. Builds a redirect URI of the form `http://127.0.0.1:{port}/oauth2/callback`.
+3. Prints an auth URL and asks the user to visit it.
+4. The browser follows the Google redirect, tries to reach `http://127.0.0.1:{port}/...`, and shows "connection refused" or "unable to connect."
+5. The user copies the URL from their address bar and pastes it back into the CLI.
+6. The CLI parses out the `code` and `state`, validates them, and exchanges the code for tokens.
 
-### 2.2 OAuth Credential Type Implications
+**No server ever runs.** The redirect URI is a formatting convention, not an actual endpoint.
 
-Because tdmClaw uses a stable, hosted redirect URI (not `localhost`), the Google Cloud project must use **Web Application** credentials (not Desktop/Installed credentials). Google validates that the `redirect_uri` in each authorization request exactly matches one of the registered redirect URIs for the credential.
+### 2.2 Why This Is Correct for tdmClaw
 
-Desktop/Installed credentials allow arbitrary `http://localhost` redirect URIs. Web Application credentials require exact matches, but support HTTPS URIs on any hostname — including LAN-only hostnames. Google's authorization server only needs to redirect the user's browser; it does not need to resolve the URI itself.
+tdmClaw runs on a headless Raspberry Pi. The earlier design proposed hosting an HTTPS callback at a LAN hostname with a reverse proxy. This added substantial operational complexity (HTTPS cert, DNS entry, reverse proxy config, port exposure) for a once-in-a-while operation. The manual flow eliminates all of it:
 
-### 2.3 Why a Persistent Server Works Here
+- No HTTP server for OAuth
+- No HTTPS termination
+- No LAN hostname
+- No firewall exposure
+- No Google Cloud Console Authorized Redirect URI matching gymnastics (other than accepting that any `http://127.0.0.1:*` URI is valid for Desktop credentials)
+- Works identically from any device on which the user can open a browser
 
-- The Pi's HTTP server (Hono, listening on a fixed port) is always running.
-- A LAN-local hostname resolves to the Pi's IP address from any device on the LAN.
-- TLS is terminated by a local reverse proxy (Caddy recommended) so the redirect URI is `https://`.
-- Google accepts HTTPS URIs regardless of whether they are publicly reachable.
-- The authorization flow completes when the user's browser follows the redirect to the Pi, which is reachable because they are on the same network.
+The tradeoff is that the user performs one copy-paste operation per authorization. This is acceptable because authorization is a rare event (effectively one-time per Google account).
+
+### 2.3 Credential Type: Desktop (Installed)
+
+The Google Cloud project must use **OAuth 2.0 Client ID of type "Desktop app"** (shown as `installed` in the JSON file). Desktop credentials allow any `http://127.0.0.1:*` redirect URI without pre-registration. They produce a `client_secret.json` file with this shape:
+
+```json
+{
+  "installed": {
+    "client_id": "NNN-xxxx.apps.googleusercontent.com",
+    "project_id": "my-project-123",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_secret": "GOCSPX-xxxxx",
+    "redirect_uris": ["http://localhost"]
+  }
+}
+```
+
+The `redirect_uris` array in the file is informational — for Desktop credentials, Google accepts any loopback URI at runtime regardless of what's in the file.
+
+### 2.4 User-Uploaded `client_secret.json`
+
+The standard UX for Google OAuth in desktop-style tools is for the user to download `client_secret.json` from the Google Cloud Console and hand it to the application. tdmClaw supports this by accepting the file as a Telegram document attachment via `/google-setup`. The bot parses the JSON, extracts `client_id` and `client_secret`, and stores them in the `google_client` table. This removes the need for the user to edit a YAML config file and remove the tokens themselves later.
 
 ---
 
@@ -59,128 +91,186 @@ Desktop/Installed credentials allow arbitrary `http://localhost` redirect URIs. 
 
 ### 3.1 Functional Goals
 
-1. Allow a LAN device to initiate Google authorization via a Telegram command.
-2. Handle the OAuth callback entirely on the Pi without requiring any public internet exposure.
-3. Store and refresh Google tokens durably across process restarts.
+1. Allow a user to fully authorize a Google account through Telegram without leaving Telegram (aside from opening the auth URL in a browser).
+2. Accept the user's `client_secret.json` as an uploaded document, store the credentials, and use them for OAuth.
+3. Store and refresh tokens durably across process restarts.
 4. Provide Gmail and Calendar API access with normalized, bounded output safe for model consumption.
 5. Support one authorized Google account in v1.
 
 ### 3.2 Technical Goals
 
-1. Cryptographically random CSRF state, stored in SQLite, expired after 10 minutes, consumed exactly once.
-2. Refresh token and access token stored in the `credentials` SQLite table.
-3. Automatic token refresh before API calls; no proactive background refresh.
+1. No HTTP server for the OAuth subsystem.
+2. Cryptographically random CSRF state stored in SQLite, 10-minute TTL, single-use.
+3. Token refresh on demand (not proactive).
 4. Tokens redacted from all log output.
 5. Google tools omitted from the tool registry when no credentials are present.
 
 ### 3.3 Non-Goals
 
-1. Multiple concurrent Google accounts in v1.
-2. Token encryption at rest in v1 (deferred to Phase 5 hardening).
-3. Google Drive, Docs, Slides, or write operations in v1.
-4. Calendar event creation in v1.
-5. PKCE — this implementation uses plain authorization code flow with `state` for CSRF.
+1. Multiple concurrent Google accounts (v1).
+2. Token encryption at rest (deferred to Phase 5 hardening).
+3. PKCE (not used — plain authorization code flow with `state` for CSRF, matching gogcli).
+4. Google Drive/Docs/Slides or any write scope in v1.
+5. Running a callback HTTP server.
 
 ---
 
 ## 4. Architecture Overview
 
-The Google OAuth subsystem spans three layers:
+The Google OAuth subsystem is a set of TypeScript modules and three Telegram commands. There are no network-facing routes.
 
 ```
-Telegram Command (/google-connect)
+Telegram /google-setup (with client_secret.json attached)
     │
     ▼
-Telegram Handler
-    │  generates state, builds auth URL, sends link to user
-    ▼
-SQLite oauth_states table
-    │  persists state, chatId, userId, expiresAt
-    ▼
-User opens link in browser
+credentials-upload.ts  →  google_client table
     │
     ▼
-Google Authorization Server
-    │  redirects to https://pi-auth.local/oauth/google/callback?code=...&state=...
+(user runs /google-connect at some later point)
+    │
     ▼
-Hono HTTP Server — GET /oauth/google/callback
-    │  validates state (consumes row), exchanges code, stores token, notifies Telegram
+state.ts  →  oauth_states table (stores state, chat/user IDs, redirect_uri, expiry)
+    │
+oauth.ts.buildAuthUrl()  →  returns a URL string
+    │
     ▼
-SQLite credentials table
-    │  stores token JSON blob (access token + refresh token + expiry)
+Bot replies with the auth URL
+    │
     ▼
-Gmail / Calendar tools
-    │  load token, refresh if expired, call Google APIs, normalize output
+User opens URL in any browser (any device, anywhere)
+    │
     ▼
-Agent tool result
+Google consent screen → user approves
+    │
+    ▼
+Browser redirects to http://127.0.0.1:PORT/oauth2/callback?code=...&state=...
+    │       (connection refused — but URL visible in address bar)
+    ▼
+User copies URL from address bar, sends to bot as /google-complete <url>
+or as a reply to the bot's prompt
+    │
+    ▼
+parse-redirect.ts  →  extract code, state, redirect_uri from the pasted URL
+    │
+state.ts.validateAndConsume()  →  matches state, returns stored redirect_uri
+    │
+oauth.ts.exchangeCode()  →  POST to Google token endpoint
+    │
+    ▼
+token-store.ts  →  credentials table (token JSON, refresh token, account email)
+    │
+    ▼
+Bot replies: "Google connected."
+    │
+    ▼
+Gmail/Calendar tools become available on next agent turn
 ```
 
 ### 4.1 Subsystem Boundaries
 
-| Subsystem | Responsibility |
-|-----------|----------------|
-| `src/google/oauth.ts` | Build auth URL, exchange code, refresh tokens, check validity |
-| `src/google/state.ts` | Generate, validate, consume, expire OAuth state records |
-| `src/google/token-store.ts` | Read/write/refresh token set from `credentials` table |
-| `src/api/google-callback.ts` | HTTP route handler for the callback |
-| `src/api/server.ts` | Hono server wiring |
+| File | Responsibility |
+|------|----------------|
+| `src/google/client-store.ts` | Read/write the user's uploaded client_id/client_secret (`google_client` table) |
+| `src/google/parse-client-secret.ts` | Validate and parse a `client_secret.json` file |
+| `src/google/state.ts` | Generate, validate, consume, expire OAuth state records (including stored redirect_uri) |
+| `src/google/oauth.ts` | Build auth URL, exchange code, refresh tokens, fetch user email |
+| `src/google/parse-redirect.ts` | Parse a pasted redirect URL to extract `code`, `state`, and base `redirect_uri` |
+| `src/google/redirect-uri.ts` | Generate an ephemeral loopback redirect URI (port-picker) |
+| `src/google/token-store.ts` | Read/write/refresh token set (`credentials` table) |
+| `src/google/scopes.ts` | Scope constants and scope-set builder |
+| `src/google/types.ts` | Shared types |
 | `src/google/gmail.ts` | Gmail API calls |
-| `src/google/normalize-gmail.ts` | Normalize raw Gmail response to `CompactEmail` |
+| `src/google/normalize-gmail.ts` | Normalize raw Gmail → `CompactEmail` |
 | `src/google/calendar.ts` | Calendar API calls |
-| `src/google/normalize-calendar.ts` | Normalize raw Calendar response to `CompactCalendarEvent` |
-| `src/google/scopes.ts` | Scope constants and scope-set builders |
-| `src/google/types.ts` | Shared types for the Google subsystem |
+| `src/google/normalize-calendar.ts` | Normalize raw Calendar → `CompactCalendarEvent` |
+| `src/security/redact.ts` | Redact tokens and codes from log output |
+| `src/telegram/commands/google.ts` | Handlers for `/google-setup`, `/google-connect`, `/google-complete`, `/google-disconnect`, `/google-status` |
+
+### 4.2 Subsystems That Are Explicitly NOT Part of This
+
+- No Hono routes for OAuth (the existing `/healthz` endpoint from the main TDD is unaffected; it is an independent concern).
+- No reverse proxy.
+- No HTTPS certificates.
 
 ---
 
-## 5. OAuth Flow — Detailed Sequence
+## 5. The OAuth Flow — Detailed Sequences
+
+### 5.1 One-Time Setup — `/google-setup`
+
+```mermaid
+sequenceDiagram
+    participant U as User (Telegram)
+    participant TH as Telegram Handler
+    participant PC as parse-client-secret
+    participant CS as client-store
+    participant DB as SQLite (google_client)
+
+    U->>TH: /google-setup + client_secret.json attachment
+    TH->>TH: Download file via bot.api.getFile + fetch
+    TH->>PC: parseClientSecret(buffer)
+    PC-->>TH: { clientId, clientSecret, projectId }
+    TH->>CS: upsert(credentials)
+    CS->>DB: INSERT OR REPLACE INTO google_client ...
+    CS-->>TH: ok
+    TH-->>U: "Google client credentials saved. Run /google-connect to authorize."
+```
+
+### 5.2 Authorization — `/google-connect` and `/google-complete`
 
 ```mermaid
 sequenceDiagram
     participant U as User (Telegram)
     participant TH as Telegram Handler
     participant ST as state.ts
-    participant DB as SQLite (oauth_states)
+    participant RU as redirect-uri.ts
     participant GO as oauth.ts
-    participant BR as Browser (LAN device)
-    participant GG as Google Auth Server
-    participant CB as /oauth/google/callback
-    participant TS as token-store.ts
-    participant CR as SQLite (credentials)
+    participant CS as client-store
+    participant PR as parse-redirect
+    participant TS as token-store
+    participant DB as SQLite
+    participant GG as Google
+    participant BR as Browser
 
     U->>TH: /google-connect
-    TH->>ST: generateState(chatId, userId)
-    ST->>ST: crypto.randomBytes(32).toString('base64url')
-    ST->>DB: INSERT INTO oauth_states (state, chatId, userId, expiresAt)
-    ST-->>TH: state string
-    TH->>GO: buildAuthUrl(state)
-    GO-->>TH: https://accounts.google.com/o/oauth2/v2/auth?...
-    TH-->>U: Send Telegram message with auth URL
+    TH->>CS: read()
+    CS-->>TH: { clientId, clientSecret }
+    TH->>RU: makeRedirectUri()
+    RU-->>TH: "http://127.0.0.1:54321/oauth2/callback"
+    TH->>ST: generate(chatId, userId, redirectUri)
+    ST->>DB: INSERT INTO oauth_states
+    ST-->>TH: state
+    TH->>GO: buildAuthUrl({clientId, redirectUri, scopes, state})
+    GO-->>TH: authorization URL
+    TH-->>U: "Open this URL, approve, paste the failed redirect URL back with /google-complete"
+    TH-->>U: (auth URL as a separate message so it's easy to tap)
 
-    U->>BR: Opens URL in browser
-    BR->>GG: GET https://accounts.google.com/o/oauth2/v2/auth?...
-    GG-->>BR: Show consent screen
-    BR->>GG: User approves
-    GG-->>BR: 302 → https://pi-auth.local/oauth/google/callback?code=...&state=...
+    U->>BR: Opens URL
+    BR->>GG: GET /o/oauth2/v2/auth?...
+    GG-->>BR: Consent screen
+    BR->>GG: Approve
+    GG-->>BR: 302 → http://127.0.0.1:54321/oauth2/callback?code=...&state=...
+    BR->>BR: "Unable to connect" — but URL is in address bar
+    U->>U: Copies URL from address bar
 
-    BR->>CB: GET /oauth/google/callback?code=...&state=...
-    CB->>ST: validateAndConsume(state)
-    ST->>DB: SELECT WHERE state=? AND expires_at > NOW() AND consumed_at IS NULL
-    DB-->>ST: row (chatId, userId)
-    ST->>DB: UPDATE SET consumed_at=NOW()
-    ST-->>CB: { chatId, userId } | null
-
-    CB->>GO: exchangeCode(code, redirectUri)
-    GO->>GG: POST /token (code, client_id, client_secret, redirect_uri)
-    GG-->>GO: { access_token, refresh_token, expiry_date, scope }
-    GO-->>CB: TokenSet
-
-    CB->>TS: upsertToken(provider, tokenSet, scopes)
-    TS->>CR: INSERT OR REPLACE INTO credentials (...)
-    CR-->>TS: ok
-
-    CB-->>BR: 200 HTML success page
-    CB->>TH: notify Telegram (chatId, "Google connected")
+    U->>TH: /google-complete http://127.0.0.1:54321/...?code=...&state=...
+    TH->>PR: parseRedirectUrl(pastedUrl)
+    PR-->>TH: { code, state, redirectUri }
+    TH->>ST: validateAndConsume(state)
+    ST->>DB: Atomic UPDATE ... WHERE consumed_at IS NULL
+    ST-->>TH: { chatId, userId, storedRedirectUri }
+    TH->>TH: assert pastedRedirectUri === storedRedirectUri
+    TH->>CS: read()
+    CS-->>TH: { clientId, clientSecret }
+    TH->>GO: exchangeCode(code, storedRedirectUri)
+    GO->>GG: POST /token
+    GG-->>GO: { access_token, refresh_token, expires_in, scope }
+    GO-->>TH: TokenSet
+    TH->>GO: fetchUserEmail(accessToken)
+    GO-->>TH: "user@gmail.com"
+    TH->>TS: upsert(tokenSet, email)
+    TS->>DB: INSERT OR REPLACE INTO credentials
+    TH-->>U: "✓ Google connected as user@gmail.com. Gmail and Calendar tools are active."
 ```
 
 ---
@@ -189,278 +279,443 @@ sequenceDiagram
 
 ### 6.1 Scope Definitions (`src/google/scopes.ts`)
 
-Scopes are defined as named constants and composed into sets based on the configured feature flags.
-
 ```typescript
-// src/google/scopes.ts
-
 export const SCOPES = {
-  openid: "openid",
-  email: "email",
-  userinfoEmail: "https://www.googleapis.com/auth/userinfo.email",
-  gmailReadonly: "https://www.googleapis.com/auth/gmail.readonly",
+  openid:           "openid",
+  email:            "email",
+  userinfoEmail:    "https://www.googleapis.com/auth/userinfo.email",
+  gmailReadonly:    "https://www.googleapis.com/auth/gmail.readonly",
   calendarReadonly: "https://www.googleapis.com/auth/calendar.readonly",
-  // Post-v1:
-  // calendarWrite: "https://www.googleapis.com/auth/calendar",
-  // gmailModify: "https://www.googleapis.com/auth/gmail.modify",
 } as const;
 
 export type ScopeConfig = {
-  gmailRead: boolean;
+  gmailRead:    boolean;
   calendarRead: boolean;
 };
 
 export function buildScopes(config: ScopeConfig): string[] {
-  const scopes: string[] = [
-    SCOPES.openid,
-    SCOPES.email,
-    SCOPES.userinfoEmail,
-  ];
-  if (config.gmailRead) scopes.push(SCOPES.gmailReadonly);
+  const scopes = [SCOPES.openid, SCOPES.email, SCOPES.userinfoEmail];
+  if (config.gmailRead)    scopes.push(SCOPES.gmailReadonly);
   if (config.calendarRead) scopes.push(SCOPES.calendarReadonly);
   return scopes;
 }
 ```
 
-**Design note:** OIDC scopes (`openid`, `email`, `userinfo.email`) are always included. They are cheap and allow the application to verify which account authorized the flow, which is important if multiple accounts are ever added.
+OIDC scopes are always included so that `fetchUserEmail()` can identify which account authorized.
 
 ---
 
 ### 6.2 Shared Types (`src/google/types.ts`)
 
 ```typescript
-// src/google/types.ts
+export type GoogleClientCredentials = {
+  clientId:     string;
+  clientSecret: string;
+  projectId?:   string;
+};
 
 export type TokenSet = {
-  accessToken: string;
+  accessToken:  string;
   refreshToken: string;
-  expiresAt: number;   // Unix timestamp ms — when the access token expires
-  scopes: string[];
+  expiresAt:    number;   // Unix ms
+  scopes:       string[];
 };
 
-export type StoredCredential = {
-  provider: "google";
-  accountLabel: string | null;  // e.g. "user@gmail.com", set after first token check
-  scopesJson: string;           // JSON array of granted scopes
-  tokenJson: string;            // JSON-serialized TokenSet (contains refresh token)
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type OAuthStateRecord = {
-  state: string;
-  provider: "google";
+export type PendingOAuthFlow = {
+  state:          string;
   telegramChatId: string;
   telegramUserId: string;
-  createdAt: string;
-  expiresAt: string;
-  consumedAt: string | null;
+  redirectUri:    string;   // Must match exactly in token exchange
+  hintEmail:      string | null;  // Email provided by user with /google-connect
+  createdAt:      string;
+  expiresAt:      string;
+};
+
+export type ParsedRedirect = {
+  code:        string;
+  state:       string;
+  redirectUri: string;      // base URI (scheme + host + path, no query)
 };
 
 export type CompactEmail = {
-  id: string;
-  threadId: string;
-  from: string;
-  subject: string;
-  receivedAt: string;   // ISO 8601
-  snippet: string;
-  labels?: string[];
+  id: string; threadId: string; from: string; subject: string;
+  receivedAt: string; snippet: string; labels?: string[];
 };
 
-export type CompactEmailDetail = CompactEmail & {
-  excerpt: string;      // Plain-text body excerpt, max 2000 chars
-};
+export type CompactEmailDetail = CompactEmail & { excerpt: string };
 
 export type CompactCalendarEvent = {
-  id: string;
-  title: string;
-  start: string;        // ISO 8601 local time
-  end?: string;
-  location?: string;
-  descriptionExcerpt?: string;  // max 500 chars
-  calendarId?: string;
+  id: string; title: string; start: string; end?: string;
+  location?: string; descriptionExcerpt?: string; calendarId?: string;
 };
 ```
 
 ---
 
-### 6.3 OAuth State Manager (`src/google/state.ts`)
+### 6.3 Client Secret Parser (`src/google/parse-client-secret.ts`)
 
-The state manager is responsible for the full lifecycle of an OAuth state token:
-
-1. **Generate** — create cryptographically random 32-byte base64url token, write to DB with 10-minute TTL
-2. **Validate** — read from DB, check expiry, check not already consumed
-3. **Consume** — atomically mark as consumed (set `consumed_at`) and return associated metadata
-4. **Expire** — background cleanup removes records older than 1 hour (or on startup)
+Validates and extracts credentials from a user-uploaded `client_secret.json`. The file may use either the `installed` (Desktop) or `web` (Web app) top-level key. Only `installed` is allowed for the manual flow.
 
 ```typescript
-// src/google/state.ts
+import type { GoogleClientCredentials } from "./types.ts";
 
+export class InvalidClientSecretError extends Error {}
+
+/**
+ * Parse a client_secret.json buffer into credentials.
+ * Throws InvalidClientSecretError with a user-friendly message if the file
+ * is malformed or is not a Desktop credential type.
+ */
+export function parseClientSecret(buf: Buffer): GoogleClientCredentials {
+  let json: any;
+  try {
+    json = JSON.parse(buf.toString("utf-8"));
+  } catch {
+    throw new InvalidClientSecretError("File is not valid JSON.");
+  }
+
+  const block = json.installed;
+  if (!block) {
+    if (json.web) {
+      throw new InvalidClientSecretError(
+        "This is a Web application credential. tdmClaw requires a Desktop " +
+        "credential. In Google Cloud Console, create a new OAuth Client ID " +
+        'of type "Desktop app" and upload that JSON instead.'
+      );
+    }
+    throw new InvalidClientSecretError(
+      'Missing "installed" key. This does not look like a Desktop credential file.'
+    );
+  }
+
+  const clientId     = typeof block.client_id     === "string" ? block.client_id.trim()     : "";
+  const clientSecret = typeof block.client_secret === "string" ? block.client_secret.trim() : "";
+
+  if (!clientId || !clientSecret) {
+    throw new InvalidClientSecretError(
+      "Missing client_id or client_secret in installed credential."
+    );
+  }
+
+  return {
+    clientId,
+    clientSecret,
+    projectId: typeof block.project_id === "string" ? block.project_id : undefined,
+  };
+}
+```
+
+**Why reject Web credentials:** Web credentials require pre-registered redirect URIs, which is exactly the friction we are avoiding. Rejecting with a helpful error prevents the user from uploading the wrong file and later hitting `redirect_uri_mismatch` in a confusing way.
+
+---
+
+### 6.4 Client Credentials Store (`src/google/client-store.ts`)
+
+Persists the parsed client credentials to SQLite. Singleton row.
+
+```typescript
+import type { Database } from "better-sqlite3";
+import type { GoogleClientCredentials } from "./types.ts";
+
+export class GoogleClientStore {
+  constructor(private readonly db: Database) {}
+
+  upsert(creds: GoogleClientCredentials): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT INTO google_client (id, client_id, client_secret, project_id, updated_at)
+      VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET
+        client_id     = excluded.client_id,
+        client_secret = excluded.client_secret,
+        project_id    = excluded.project_id,
+        updated_at    = excluded.updated_at
+    `).run(creds.clientId, creds.clientSecret, creds.projectId ?? null, now);
+  }
+
+  read(): GoogleClientCredentials | null {
+    const row = this.db.prepare(`
+      SELECT client_id, client_secret, project_id FROM google_client WHERE id = 1
+    `).get() as { client_id: string; client_secret: string; project_id: string | null } | undefined;
+    if (!row) return null;
+    return {
+      clientId:     row.client_id,
+      clientSecret: row.client_secret,
+      projectId:    row.project_id ?? undefined,
+    };
+  }
+
+  delete(): void {
+    this.db.prepare(`DELETE FROM google_client WHERE id = 1`).run();
+  }
+
+  has(): boolean {
+    return this.read() !== null;
+  }
+}
+```
+
+---
+
+### 6.5 Redirect URI Generator (`src/google/redirect-uri.ts`)
+
+Generates a loopback redirect URI with a free-ish port. The port does not have to be available — nothing ever listens on it — but using a different port per attempt avoids the cosmetic issue of all attempts looking identical in logs.
+
+```typescript
+import * as crypto from "crypto";
+
+const CALLBACK_PATH = "/oauth2/callback";
+
+/**
+ * Generate an ephemeral loopback redirect URI in the dynamic port range.
+ *
+ * Nothing listens on this port — the URI exists only for Google's redirect
+ * to produce a predictable "connection refused" in the user's browser, with
+ * the code and state visible in the address bar for copy-paste.
+ *
+ * We use 127.0.0.1 rather than localhost because Google treats them
+ * identically but 127.0.0.1 is unambiguous across platforms.
+ */
+export function makeRedirectUri(): string {
+  // IANA dynamic/private port range: 49152-65535
+  const port = 49152 + crypto.randomInt(0, 65535 - 49152 + 1);
+  return `http://127.0.0.1:${port}${CALLBACK_PATH}`;
+}
+```
+
+**Why not probe for a free port (like gogcli does):** gogcli probes because the tool might also be used in `--server` mode where the port genuinely must be free. In the tdmClaw manual-only flow, no port is ever bound, so probing adds complexity for no benefit. Random port selection from the dynamic range is sufficient.
+
+---
+
+### 6.6 Redirect URL Parser (`src/google/parse-redirect.ts`)
+
+Parses the URL the user pastes back after the browser fails to load the loopback redirect.
+
+```typescript
+import type { ParsedRedirect } from "./types.ts";
+
+export class InvalidRedirectError extends Error {}
+
+/**
+ * Parse a URL pasted by the user (from their browser's address bar after the
+ * failed loopback redirect). Returns the authorization code, state, and the
+ * base redirect URI (scheme + host + port + path, no query string).
+ *
+ * The base redirect URI is extracted because it must be passed to the token
+ * exchange request, and Google requires it to match exactly the one in the
+ * original auth URL.
+ */
+export function parseRedirectUrl(raw: string): ParsedRedirect {
+  const trimmed = raw.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new InvalidRedirectError("Not a valid URL.");
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new InvalidRedirectError("URL must start with http:// or https://");
+  }
+
+  const oauthError = parsed.searchParams.get("error");
+  if (oauthError) {
+    throw new InvalidRedirectError(`Google returned error: ${oauthError}`);
+  }
+
+  const code = parsed.searchParams.get("code");
+  if (!code) {
+    throw new InvalidRedirectError(
+      "URL does not contain a `code` parameter. Make sure you copied the " +
+      "full URL from your browser's address bar AFTER Google redirected you."
+    );
+  }
+
+  const state = parsed.searchParams.get("state") ?? "";
+
+  // Reconstruct the base URI exactly as Google saw it:
+  // scheme + host + port + path — no query, no fragment
+  const redirectUri = `${parsed.protocol}//${parsed.host}${parsed.pathname}`;
+
+  return { code, state, redirectUri };
+}
+```
+
+**Note on the base URI reconstruction:** `URL.pathname` preserves the path exactly. `URL.host` includes the port when it's non-default. This mirrors gogcli's `redirectURIFromParsedURL()`.
+
+---
+
+### 6.7 OAuth State Manager (`src/google/state.ts`)
+
+Identical in shape to the earlier design, but with `redirect_uri` persisted per state.
+
+```typescript
 import * as crypto from "crypto";
 import type { Database } from "better-sqlite3";
-import type { OAuthStateRecord } from "./types.ts";
 
 export const STATE_TTL_MINUTES = 10;
 
 export type ConsumedState = {
   telegramChatId: string;
   telegramUserId: string;
+  redirectUri:    string;
+  hintEmail:      string | null;  // Email provided by user with /google-connect
 };
 
 export class OAuthStateManager {
   constructor(private readonly db: Database) {}
 
-  generate(telegramChatId: string, telegramUserId: string): string {
+  generate(
+    telegramChatId: string,
+    telegramUserId: string,
+    redirectUri: string,
+    hintEmail: string | null = null,
+  ): string {
     const state = crypto.randomBytes(32).toString("base64url");
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + STATE_TTL_MINUTES * 60 * 1000);
-
+    const expiresAt = new Date(now.getTime() + STATE_TTL_MINUTES * 60_000);
     this.db.prepare(`
-      INSERT INTO oauth_states (state, provider, telegram_chat_id, telegram_user_id, created_at, expires_at, consumed_at)
-      VALUES (?, 'google', ?, ?, ?, ?, NULL)
-    `).run(
-      state,
-      telegramChatId,
-      telegramUserId,
-      now.toISOString(),
-      expiresAt.toISOString(),
-    );
-
+      INSERT INTO oauth_states
+        (state, provider, telegram_chat_id, telegram_user_id, redirect_uri,
+         hint_email, created_at, expires_at, consumed_at)
+      VALUES (?, 'google', ?, ?, ?, ?, ?, ?, NULL)
+    `).run(state, telegramChatId, telegramUserId, redirectUri, hintEmail,
+           now.toISOString(), expiresAt.toISOString());
     return state;
   }
 
-  /**
-   * Validates and atomically consumes a state token.
-   * Returns null if the state is unknown, expired, or already consumed.
-   */
   validateAndConsume(state: string): ConsumedState | null {
     const now = new Date().toISOString();
-
-    // Attempt atomic consume: only updates if all conditions hold.
-    const result = this.db.prepare(`
-      UPDATE oauth_states
-      SET consumed_at = ?
-      WHERE state = ?
-        AND expires_at > ?
-        AND consumed_at IS NULL
+    const r = this.db.prepare(`
+      UPDATE oauth_states SET consumed_at = ?
+      WHERE state = ? AND expires_at > ? AND consumed_at IS NULL
     `).run(now, state, now);
-
-    if (result.changes === 0) {
-      return null;
-    }
+    if (r.changes === 0) return null;
 
     const row = this.db.prepare(`
-      SELECT telegram_chat_id, telegram_user_id
-      FROM oauth_states
-      WHERE state = ?
-    `).get(state) as { telegram_chat_id: string; telegram_user_id: string } | undefined;
-
+      SELECT telegram_chat_id, telegram_user_id, redirect_uri, hint_email
+      FROM oauth_states WHERE state = ?
+    `).get(state) as {
+      telegram_chat_id: string; telegram_user_id: string; redirect_uri: string;
+      hint_email: string | null;
+    } | undefined;
     if (!row) return null;
 
     return {
       telegramChatId: row.telegram_chat_id,
       telegramUserId: row.telegram_user_id,
+      redirectUri:    row.redirect_uri,
+      hintEmail:      row.hint_email,
     };
   }
 
-  /**
-   * Remove expired state records. Call on startup and periodically.
-   */
+  /** Return the latest unused pending flow for a chat, if any. */
+  findPendingForChat(chatId: string): { state: string; redirectUri: string } | null {
+    const now = new Date().toISOString();
+    const row = this.db.prepare(`
+      SELECT state, redirect_uri FROM oauth_states
+      WHERE telegram_chat_id = ?
+        AND provider = 'google'
+        AND expires_at > ?
+        AND consumed_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(chatId, now) as { state: string; redirect_uri: string } | undefined;
+    if (!row) return null;
+    return { state: row.state, redirectUri: row.redirect_uri };
+  }
+
   purgeExpired(): number {
-    const cutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 1 hour ago
-    const result = this.db.prepare(`
-      DELETE FROM oauth_states WHERE expires_at < ?
-    `).run(cutoff);
-    return result.changes;
+    const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
+    return this.db.prepare(`DELETE FROM oauth_states WHERE expires_at < ?`)
+      .run(cutoff).changes;
   }
 }
 ```
 
-**Design notes:**
-- The `UPDATE ... WHERE consumed_at IS NULL` pattern provides atomic single-use consumption. SQLite's serialized write model guarantees that only one caller wins even if two requests arrive simultaneously with the same state token.
-- The state TTL is 10 minutes, matching the gogcli manual flow TTL. After 10 minutes the link is invalid and the user must run `/google-connect` again.
-- `purgeExpired()` removes records older than 1 hour (not just expired), giving a window for debugging before cleanup.
+The `findPendingForChat` helper enables a nicer UX where the user can just paste the URL without re-typing `/google-complete` — the bot detects that the chat has a pending flow and interprets the URL accordingly. It is optional; see §6.11 for details.
 
 ---
 
-### 6.4 OAuth Core (`src/google/oauth.ts`)
+### 6.8 OAuth Core (`src/google/oauth.ts`)
 
-This module handles the two network-touching steps of the OAuth flow: building the authorization URL and exchanging the code for tokens. It also handles token refresh.
+Same design as before with one change: `exchangeCode()` now takes the `redirectUri` as an explicit parameter. The `GoogleOAuth` instance is not bound to a specific redirect URI — this matches the manual flow where each authorization attempt may use a different ephemeral URI.
 
 ```typescript
-// src/google/oauth.ts
+import type { TokenSet, GoogleClientCredentials } from "./types.ts";
 
-import type { TokenSet } from "./types.ts";
-
-export type OAuthConfig = {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;      // e.g. "https://pi-auth.local/oauth/google/callback"
-  scopes: string[];
-};
-
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
-const AUTH_ENDPOINT  = "https://accounts.google.com/o/oauth2/v2/auth";
+const TOKEN_ENDPOINT    = "https://oauth2.googleapis.com/token";
+const AUTH_ENDPOINT     = "https://accounts.google.com/o/oauth2/v2/auth";
 const USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v1/userinfo";
 
-export class GoogleOAuth {
-  constructor(private readonly config: OAuthConfig) {}
+export type AuthUrlParams = {
+  clientId:    string;
+  redirectUri: string;
+  scopes:      string[];
+  state:       string;
+  loginHint?:  string;  // Pre-selects the Google account on the consent screen
+};
 
+export class GoogleOAuth {
   /**
-   * Build the Google authorization URL.
-   * The state parameter is generated by OAuthStateManager and passed in.
+   * Build the authorization URL. Parameters:
+   *
+   * - access_type=offline            → required to receive a refresh_token
+   * - prompt=consent                 → always re-issues refresh_token, avoiding
+   *                                    the "no refresh_token" failure mode
+   * - include_granted_scopes=true    → accumulates scopes across authorizations
+   * - login_hint                     → pre-selects the account (from /google-connect <email>)
    */
-  buildAuthUrl(state: string): string {
-    const params = new URLSearchParams({
-      response_type: "code",
-      client_id:     this.config.clientId,
-      redirect_uri:  this.config.redirectUri,
-      scope:         this.config.scopes.join(" "),
-      state,
-      access_type:   "offline",    // Required to receive a refresh_token
-      prompt:        "consent",    // Forces Google to always issue a new refresh_token
+  buildAuthUrl(params: AuthUrlParams): string {
+    const q = new URLSearchParams({
+      response_type:          "code",
+      client_id:              params.clientId,
+      redirect_uri:           params.redirectUri,
+      scope:                  params.scopes.join(" "),
+      state:                  params.state,
+      access_type:            "offline",
+      prompt:                 "consent",
       include_granted_scopes: "true",
     });
-    return `${AUTH_ENDPOINT}?${params.toString()}`;
+    if (params.loginHint) q.set("login_hint", params.loginHint);
+    return `${AUTH_ENDPOINT}?${q.toString()}`;
   }
 
   /**
-   * Exchange an authorization code for a token set.
-   * Throws if no refresh_token is returned (which can happen if prompt=consent
-   * was not set and the user previously authorized).
+   * Exchange an authorization code for a TokenSet.
+   *
+   * IMPORTANT: redirectUri must exactly match the one used in buildAuthUrl().
+   * Google's token endpoint validates this and returns redirect_uri_mismatch
+   * otherwise.
    */
-  async exchangeCode(code: string): Promise<TokenSet> {
+  async exchangeCode(
+    creds: GoogleClientCredentials,
+    code: string,
+    redirectUri: string,
+  ): Promise<TokenSet> {
     const resp = await fetch(TOKEN_ENDPOINT, {
-      method: "POST",
+      method:  "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
+      body:    new URLSearchParams({
         grant_type:    "authorization_code",
         code,
-        redirect_uri:  this.config.redirectUri,
-        client_id:     this.config.clientId,
-        client_secret: this.config.clientSecret,
+        redirect_uri:  redirectUri,
+        client_id:     creds.clientId,
+        client_secret: creds.clientSecret,
       }),
     });
-
     if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Token exchange failed: ${resp.status} ${body}`);
+      throw new Error(`Token exchange failed (${resp.status}): ${await resp.text()}`);
     }
-
     const data = await resp.json() as {
-      access_token:  string;
-      refresh_token?: string;
-      expires_in:    number;
-      scope:         string;
+      access_token: string; refresh_token?: string; expires_in: number; scope: string;
     };
-
     if (!data.refresh_token) {
       throw new Error(
-        "Google did not return a refresh_token. " +
-        "Revoke the app access in your Google account and try again."
+        "Google did not return a refresh_token. Revoke app access at " +
+        "https://myaccount.google.com/permissions and try /google-connect again."
       );
     }
-
     return {
       accessToken:  data.access_token,
       refreshToken: data.refresh_token,
@@ -469,376 +724,383 @@ export class GoogleOAuth {
     };
   }
 
-  /**
-   * Use a refresh token to get a new access token.
-   */
-  async refreshAccessToken(refreshToken: string): Promise<TokenSet> {
+  async refreshAccessToken(
+    creds: GoogleClientCredentials,
+    refreshToken: string,
+  ): Promise<TokenSet> {
     const resp = await fetch(TOKEN_ENDPOINT, {
-      method: "POST",
+      method:  "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
+      body:    new URLSearchParams({
         grant_type:    "refresh_token",
         refresh_token: refreshToken,
-        client_id:     this.config.clientId,
-        client_secret: this.config.clientSecret,
+        client_id:     creds.clientId,
+        client_secret: creds.clientSecret,
       }),
     });
-
     if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Token refresh failed: ${resp.status} ${body}`);
+      throw new Error(`Token refresh failed (${resp.status}): ${await resp.text()}`);
     }
-
     const data = await resp.json() as {
-      access_token: string;
-      expires_in:   number;
-      scope:        string;
-      // Note: Google does NOT return a new refresh_token on refresh —
-      // the original refresh_token remains valid.
-      refresh_token?: string;
+      access_token: string; refresh_token?: string; expires_in: number; scope: string;
     };
-
     return {
       accessToken:  data.access_token,
-      refreshToken: data.refresh_token ?? refreshToken, // keep original if not rotated
+      refreshToken: data.refresh_token ?? refreshToken,
       expiresAt:    Date.now() + data.expires_in * 1000,
       scopes:       data.scope.split(" "),
     };
   }
 
-  /**
-   * Fetch the authorized user's email address from the userinfo endpoint.
-   * Used after token exchange to record the account label.
-   */
   async fetchUserEmail(accessToken: string): Promise<string | null> {
-    const resp = await fetch(USERINFO_ENDPOINT, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json() as { email?: string };
-    return data.email ?? null;
+    try {
+      const r = await fetch(USERINFO_ENDPOINT, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!r.ok) return null;
+      const d = await r.json() as { email?: string };
+      return d.email ?? null;
+    } catch {
+      return null;
+    }
   }
 }
 ```
 
-**Why `prompt=consent`:** Without it, Google will not re-issue a `refresh_token` if it previously issued one for this client/user pair. On a fresh install this is not a problem, but if the user revokes and re-connects, or the token is deleted from the DB, omitting `prompt=consent` would result in a `TokenSet` with no `refresh_token`, which is caught and surfaced as an error. Always including `prompt=consent` prevents this entire class of bug.
-
-**Why `access_type=offline`:** Required to receive a `refresh_token` at all. Without it, only an access token (short-lived, no refresh capability) is returned.
-
-**Redirect URI must match exactly:** The same `redirectUri` string must be used in both `buildAuthUrl()` and `exchangeCode()`. Google's token endpoint validates this. If they differ even by a trailing slash, the exchange fails with `redirect_uri_mismatch`.
-
 ---
 
-### 6.5 Token Store (`src/google/token-store.ts`)
+### 6.9 Token Store (`src/google/token-store.ts`)
 
-The token store is the authoritative source of credentials for Google API clients. It:
-
-1. Writes a token set to the `credentials` table (upsert by provider).
-2. Reads the stored token set.
-3. Automatically refreshes the access token if it is within 5 minutes of expiry.
-4. Returns a valid `accessToken` ready for API use.
+Takes a `GoogleClientStore` dependency (not a static `OAuthConfig`) because the client credentials are dynamic — they come from the user's uploaded `client_secret.json`.
 
 ```typescript
-// src/google/token-store.ts
-
 import type { Database } from "better-sqlite3";
 import type { TokenSet } from "./types.ts";
 import type { GoogleOAuth } from "./oauth.ts";
+import type { GoogleClientStore } from "./client-store.ts";
 import type { AppLogger } from "../app/logger.ts";
 
-// Refresh 5 minutes before actual expiry to avoid races
-const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
+const EXPIRY_BUFFER_MS = 5 * 60_000;
 
 export class GoogleTokenStore {
   constructor(
-    private readonly db: Database,
-    private readonly oauth: GoogleOAuth,
-    private readonly logger: AppLogger,
+    private readonly db:          Database,
+    private readonly oauth:       GoogleOAuth,
+    private readonly clientStore: GoogleClientStore,
+    private readonly logger:      AppLogger,
   ) {}
 
-  /**
-   * Persist a token set. Overwrites any existing credential for "google".
-   * accountLabel is optional; pass the email fetched from userinfo if available.
-   */
   upsert(tokenSet: TokenSet, accountLabel: string | null = null): void {
     const now = new Date().toISOString();
     this.db.prepare(`
-      INSERT INTO credentials (provider, account_label, scopes_json, token_json, created_at, updated_at)
+      INSERT INTO credentials
+        (provider, account_label, scopes_json, token_json, created_at, updated_at)
       VALUES ('google', ?, ?, ?, ?, ?)
       ON CONFLICT (provider) DO UPDATE SET
         account_label = excluded.account_label,
         scopes_json   = excluded.scopes_json,
         token_json    = excluded.token_json,
         updated_at    = excluded.updated_at
-    `).run(
-      accountLabel,
-      JSON.stringify(tokenSet.scopes),
-      JSON.stringify(tokenSet),
-      now,
-      now,
-    );
+    `).run(accountLabel, JSON.stringify(tokenSet.scopes),
+           JSON.stringify(tokenSet), now, now);
   }
 
-  /**
-   * Returns true if a credential record exists for Google.
-   */
   hasCredential(): boolean {
-    const row = this.db.prepare(`
-      SELECT 1 FROM credentials WHERE provider = 'google' LIMIT 1
-    `).get();
-    return row !== undefined;
+    return this.db.prepare(
+      `SELECT 1 FROM credentials WHERE provider = 'google' LIMIT 1`
+    ).get() !== undefined;
   }
 
-  /**
-   * Read the stored TokenSet from the DB.
-   * Returns null if no credential has been stored.
-   */
-  private readStored(): TokenSet | null {
-    const row = this.db.prepare(`
-      SELECT token_json FROM credentials WHERE provider = 'google'
-    `).get() as { token_json: string } | undefined;
-    if (!row) return null;
-    return JSON.parse(row.token_json) as TokenSet;
+  accountLabel(): string | null {
+    const row = this.db.prepare(
+      `SELECT account_label FROM credentials WHERE provider = 'google'`
+    ).get() as { account_label: string | null } | undefined;
+    return row?.account_label ?? null;
   }
 
-  /**
-   * Get a valid access token, refreshing if necessary.
-   * Throws if no credential is stored or if refresh fails.
-   */
+  delete(): void {
+    this.db.prepare(`DELETE FROM credentials WHERE provider = 'google'`).run();
+  }
+
   async getAccessToken(): Promise<string> {
     const stored = this.readStored();
     if (!stored) {
-      throw new Error(
-        "No Google credentials found. Use /google-connect to authorize."
-      );
+      throw new Error("No Google credentials. Run /google-connect to authorize.");
     }
-
-    const needsRefresh = Date.now() >= stored.expiresAt - EXPIRY_BUFFER_MS;
-    if (!needsRefresh) {
+    if (Date.now() < stored.expiresAt - EXPIRY_BUFFER_MS) {
       return stored.accessToken;
     }
 
-    this.logger.info({ subsystem: "google", event: "token_refresh_start" }, "Refreshing Google access token");
+    const creds = this.clientStore.read();
+    if (!creds) {
+      throw new Error(
+        "Google client credentials missing (expected after /google-setup). " +
+        "Re-upload client_secret.json."
+      );
+    }
 
-    const refreshed = await this.oauth.refreshAccessToken(stored.refreshToken);
-
-    // Persist the refreshed token set
-    this.upsert(refreshed);
-
-    this.logger.info({ subsystem: "google", event: "token_refresh_ok" }, "Google access token refreshed");
-    return refreshed.accessToken;
+    this.logger.info({ subsystem: "google", event: "token_refresh_start" }, "Refreshing");
+    const fresh = await this.oauth.refreshAccessToken(creds, stored.refreshToken);
+    this.upsert(fresh);
+    this.logger.info({ subsystem: "google", event: "token_refresh_ok" }, "Refreshed");
+    return fresh.accessToken;
   }
 
-  /**
-   * Delete stored credentials. Used when the user revokes authorization.
-   */
-  delete(): void {
-    this.db.prepare(`DELETE FROM credentials WHERE provider = 'google'`).run();
+  private readStored(): TokenSet | null {
+    const row = this.db.prepare(
+      `SELECT token_json FROM credentials WHERE provider = 'google'`
+    ).get() as { token_json: string } | undefined;
+    return row ? JSON.parse(row.token_json) as TokenSet : null;
   }
 }
 ```
 
-**Design notes:**
-- The token JSON blob (stored in `token_json`) contains both the `accessToken` and `refreshToken`. The entire blob is replaced on each refresh. This is deliberate: storing them separately would require careful handling to avoid a state where the access token was persisted but the upsert of the refresh token failed.
-- The 5-minute buffer (`EXPIRY_BUFFER_MS`) prevents a race where the token is valid when read but expires before the API call completes.
-- In v1, there is one credential row per provider (primary key is `provider`). Multi-account support would require changing the primary key to `(provider, account_label)`.
-
 ---
 
-### 6.6 Callback Route Handler (`src/api/google-callback.ts`)
+### 6.10 Telegram Command Handlers
 
-This is the HTTP route that Google redirects the user's browser to. It is the join point of the OAuth flow.
+Located in `src/telegram/commands/google.ts`. The module exports three handlers plus a URL-pattern detector.
+
+#### 6.10.1 `/google-setup` — credential upload
 
 ```typescript
-// src/api/google-callback.ts
+import type { Bot, Context } from "grammy";
 
-import type { Context } from "hono";
-import type { OAuthStateManager } from "../google/state.ts";
-import type { GoogleOAuth } from "../google/oauth.ts";
-import type { GoogleTokenStore } from "../google/token-store.ts";
-import type { AppLogger } from "../app/logger.ts";
-import type { Bot } from "grammy";
+export function registerGoogleCommands(deps: {
+  bot:         Bot;
+  clientStore: GoogleClientStore;
+  stateMgr:    OAuthStateManager;
+  oauth:       GoogleOAuth;
+  tokenStore:  GoogleTokenStore;
+  scopeConfig: ScopeConfig;
+  isOwner:     (ctx: Context) => boolean;
+  logger:      AppLogger;
+}) {
+  const { bot, clientStore, stateMgr, oauth, tokenStore, scopeConfig, isOwner, logger } = deps;
 
-const SUCCESS_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Connected</title></head>
-<body style="font-family:sans-serif;max-width:480px;margin:4rem auto;text-align:center">
-  <h1>Google account connected</h1>
-  <p>You can close this tab and return to Telegram.</p>
-</body>
-</html>`;
+  bot.command("google-setup", async (ctx) => {
+    if (!isOwner(ctx)) return;
 
-const ERROR_HTML = (reason: string) => `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Authorization Failed</title></head>
-<body style="font-family:sans-serif;max-width:480px;margin:4rem auto;text-align:center">
-  <h1>Authorization failed</h1>
-  <p>${reason}</p>
-  <p>Return to Telegram and try <code>/google-connect</code> again.</p>
-</body>
-</html>`;
-
-export type GoogleCallbackDeps = {
-  stateManager: OAuthStateManager;
-  oauth:        GoogleOAuth;
-  tokenStore:   GoogleTokenStore;
-  bot:          Bot;
-  logger:       AppLogger;
-};
-
-export function makeGoogleCallbackHandler(deps: GoogleCallbackDeps) {
-  return async (c: Context) => {
-    const { stateManager, oauth, tokenStore, bot, logger } = deps;
-
-    const error = c.req.query("error");
-    if (error) {
-      logger.warn({ subsystem: "google", event: "oauth_denied", error }, "User denied Google authorization");
-      return c.html(ERROR_HTML("Authorization was denied."), 400);
+    const doc = ctx.message?.document;
+    if (!doc) {
+      await ctx.reply(
+        "Please attach your client_secret.json file (from Google Cloud Console → " +
+        "APIs & Services → Credentials → your Desktop OAuth Client ID → Download JSON)."
+      );
+      return;
+    }
+    if (doc.file_size && doc.file_size > 64 * 1024) {
+      await ctx.reply("That file is too large to be a client_secret.json. Aborting.");
+      return;
     }
 
-    const code  = c.req.query("code");
-    const state = c.req.query("state");
+    // Download the file
+    const file   = await ctx.api.getFile(doc.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
+    const resp   = await fetch(fileUrl);
+    if (!resp.ok) {
+      await ctx.reply("Could not download the attached file. Try again.");
+      return;
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
 
-    if (!code || !state) {
-      return c.html(ERROR_HTML("Missing required parameters."), 400);
+    try {
+      const creds = parseClientSecret(buf);
+      clientStore.upsert(creds);
+      await ctx.reply(
+        `✓ Saved Google client credentials${creds.projectId ? ` (project ${creds.projectId})` : ""}.\n\n` +
+        "Now run /google-connect to authorize your Google account."
+      );
+      logger.info({ subsystem: "google", event: "client_setup" }, "Client credentials uploaded");
+    } catch (err) {
+      if (err instanceof InvalidClientSecretError) {
+        await ctx.reply(`✗ ${err.message}`);
+      } else {
+        logger.error({ subsystem: "google", event: "client_setup_failed", err }, "Setup failed");
+        await ctx.reply("Unexpected error parsing the file.");
+      }
+    }
+  });
+```
+
+#### 6.10.2 `/google-connect <email>` — step 1
+
+The user must provide their Google email address as an argument. This serves two purposes:
+1. It is passed as `login_hint` to Google's auth URL, pre-selecting the account on the consent screen.
+2. It is stored with the OAuth state as a fallback `accountLabel` in case `fetchUserEmail()` returns null after exchange.
+
+```typescript
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  bot.command("google-connect", async (ctx) => {
+    if (!isOwner(ctx)) return;
+
+    const hintEmail = (ctx.match as string | undefined)?.trim() ?? "";
+    if (!hintEmail || !EMAIL_RE.test(hintEmail)) {
+      await ctx.reply(
+        "Usage: /google-connect your@gmail.com\n\n" +
+        "Provide the email address of the Google account you want to connect."
+      );
+      return;
     }
 
-    // Validate and consume the state token (CSRF check + single-use enforcement)
-    const stateData = stateManager.validateAndConsume(state);
-    if (!stateData) {
-      logger.warn({ subsystem: "google", event: "oauth_state_invalid", state }, "Invalid or expired OAuth state");
-      return c.html(ERROR_HTML("This authorization link has expired or already been used."), 400);
+    const creds = clientStore.read();
+    if (!creds) {
+      await ctx.reply(
+        "No Google client credentials stored. Run /google-setup first, " +
+        "attaching your client_secret.json file."
+      );
+      return;
+    }
+
+    const chatId      = String(ctx.chat!.id);
+    const userId      = String(ctx.from!.id);
+    const redirectUri = makeRedirectUri();
+    const state       = stateMgr.generate(chatId, userId, redirectUri, hintEmail);
+    const scopes      = buildScopes(scopeConfig);
+    const authUrl     = oauth.buildAuthUrl({
+      clientId: creds.clientId, redirectUri, scopes, state, loginHint: hintEmail,
+    });
+
+    await ctx.reply(
+      `Connecting Google account: ${hintEmail}\n\n` +
+      "1. Open the URL below in a browser on any device.\n" +
+      "2. Approve the Google consent screen.\n" +
+      "3. Your browser will fail to load a page at 127.0.0.1 — this is expected.\n" +
+      "4. Copy the full URL from your browser's address bar.\n" +
+      "5. Send it back here as: `/google-complete <paste the URL>`\n\n" +
+      "This link expires in 10 minutes.",
+      { parse_mode: "Markdown" },
+    );
+    await ctx.reply(authUrl);   // separate message so it's easy to tap
+  });
+```
+
+#### 6.10.3 `/google-complete` — step 2
+
+```typescript
+  bot.command("google-complete", async (ctx) => {
+    if (!isOwner(ctx)) return;
+
+    // Extract the URL argument. Grammy exposes it via ctx.match.
+    const raw = (ctx.match as string | undefined)?.trim();
+    if (!raw) {
+      await ctx.reply("Usage: /google-complete <URL from browser address bar>");
+      return;
+    }
+
+    let parsed;
+    try {
+      parsed = parseRedirectUrl(raw);
+    } catch (err) {
+      await ctx.reply(`✗ ${(err as Error).message}`);
+      return;
+    }
+
+    const consumed = stateMgr.validateAndConsume(parsed.state);
+    if (!consumed) {
+      await ctx.reply(
+        "✗ This authorization link has expired, was already used, " +
+        "or wasn't generated by this bot. Run /google-connect to start over."
+      );
+      return;
+    }
+
+    if (consumed.redirectUri !== parsed.redirectUri) {
+      logger.warn({
+        subsystem: "google", event: "redirect_uri_mismatch",
+        expected: consumed.redirectUri, got: parsed.redirectUri,
+      }, "Redirect URI mismatch in paste-back");
+      await ctx.reply(
+        "✗ The URL you pasted doesn't match the one I generated. " +
+        "Run /google-connect to start over."
+      );
+      return;
+    }
+
+    const creds = clientStore.read();
+    if (!creds) {
+      await ctx.reply("✗ Client credentials missing. Run /google-setup.");
+      return;
     }
 
     let tokenSet;
     try {
-      tokenSet = await oauth.exchangeCode(code);
+      tokenSet = await oauth.exchangeCode(creds, parsed.code, consumed.redirectUri);
     } catch (err) {
-      logger.error({ subsystem: "google", event: "oauth_exchange_failed", err }, "Code exchange failed");
-      return c.html(ERROR_HTML("Failed to exchange authorization code. Please try again."), 500);
+      logger.error({ subsystem: "google", event: "exchange_failed", err }, "Exchange failed");
+      await ctx.reply("✗ Failed to exchange authorization code. Run /google-connect to retry.");
+      return;
     }
 
-    // Best-effort: fetch the email for labeling — failure is non-fatal
-    let accountLabel: string | null = null;
-    try {
-      accountLabel = await oauth.fetchUserEmail(tokenSet.accessToken);
-    } catch {
-      // Non-fatal; label will remain null
-    }
+    // fetchUserEmail is the authoritative source; fall back to the hint the user
+    // provided with /google-connect if it returns null (network error, etc.)
+    const fetchedEmail = await oauth.fetchUserEmail(tokenSet.accessToken);
+    const email = fetchedEmail ?? consumed.hintEmail ?? null;
+    tokenStore.upsert(tokenSet, email);
 
-    tokenStore.upsert(tokenSet, accountLabel);
-
-    logger.info(
-      { subsystem: "google", event: "oauth_complete", accountLabel: accountLabel ?? "unknown" },
-      "Google OAuth complete"
+    logger.info({ subsystem: "google", event: "oauth_complete", email }, "OAuth complete");
+    await ctx.reply(
+      `✓ Google connected${email ? ` as ${email}` : ""}. ` +
+      `Gmail and Calendar tools are now active.`
     );
-
-    // Notify the Telegram chat that initiated the flow (fire-and-forget)
-    const label = accountLabel ? ` (${accountLabel})` : "";
-    bot.api.sendMessage(
-      stateData.telegramChatId,
-      `Google account${label} connected successfully. Gmail and Calendar tools are now available.`,
-    ).catch((err) => {
-      logger.warn({ subsystem: "google", event: "telegram_notify_failed", err }, "Failed to send Telegram confirmation");
-    });
-
-    return c.html(SUCCESS_HTML, 200);
-  };
-}
+  });
 ```
 
-**Error handling notes:**
-- `error` query param: Google sends this if the user clicks "Deny" on the consent screen. Always check for this before looking for `code`.
-- State validation failure: returns a user-friendly HTML page (not a JSON error) because the recipient is a browser, not an API client.
-- Code exchange failure: the token was already consumed from the state table. This is intentional — if the code exchange fails, the user must start over with `/google-connect` (the code is single-use on Google's side regardless).
-- Telegram notification is fire-and-forget: if the bot cannot send the message (e.g., the chat was deleted), the OAuth flow should still be considered successful.
-
----
-
-### 6.7 Hono Server Wiring (`src/api/server.ts`)
+#### 6.10.4 `/google-status` and `/google-disconnect`
 
 ```typescript
-// src/api/server.ts
+  bot.command("google-status", async (ctx) => {
+    if (!isOwner(ctx)) return;
+    const hasClient = clientStore.has();
+    const hasCreds  = tokenStore.hasCredential();
+    const email     = tokenStore.accountLabel();
+    await ctx.reply(
+      `Client credentials: ${hasClient ? "✓ uploaded" : "✗ missing (run /google-setup)"}\n` +
+      `Account authorization: ${hasCreds ? `✓ connected${email ? ` as ${email}` : ""}` : "✗ not connected (run /google-connect)"}`
+    );
+  });
 
-import { Hono } from "hono";
-import { serve } from "@hono/node-server";
-import type { GoogleCallbackDeps } from "./google-callback.ts";
-import { makeGoogleCallbackHandler } from "./google-callback.ts";
-import type { AppLogger } from "../app/logger.ts";
-
-export type ApiServerConfig = {
-  host: string;   // e.g. "0.0.0.0" or "127.0.0.1"
-  port: number;
-};
-
-export function createApiServer(
-  config: ApiServerConfig,
-  google: GoogleCallbackDeps,
-  logger: AppLogger,
-): { start: () => void; stop: () => Promise<void> } {
-  const app = new Hono();
-
-  app.get("/healthz", (c) => c.json({ ok: true }));
-
-  app.get("/oauth/google/callback", makeGoogleCallbackHandler(google));
-
-  // Catch-all — return 404 for anything else
-  app.all("*", (c) => c.text("Not found", 404));
-
-  let server: ReturnType<typeof serve> | null = null;
-
-  return {
-    start() {
-      server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, (info) => {
-        logger.info({ subsystem: "api", event: "server_start", port: info.port }, "API server listening");
-      });
-    },
-    async stop() {
-      if (server) {
-        await new Promise<void>((resolve) => server!.close(() => resolve()));
-      }
-    },
-  };
+  bot.command("google-disconnect", async (ctx) => {
+    if (!isOwner(ctx)) return;
+    tokenStore.delete();
+    await ctx.reply("Google account disconnected. Client credentials kept (run /google-setup to replace).");
+  });
 }
 ```
 
 ---
 
-### 6.8 Telegram `/google-connect` Handler
+### 6.11 Optional UX Improvement: Auto-detect pasted URLs
 
-This section of the Telegram handler generates the OAuth state and sends the authorization URL.
+If the user forgets the `/google-complete` prefix and just pastes the URL, detect that the message is a redirect URL and route it. This is optional; the explicit command form is clearer.
 
 ```typescript
-// Relevant portion of src/telegram/handler.ts
+// Register AFTER the command handlers so commands take priority
+bot.on("message:text", async (ctx, next) => {
+  const text = ctx.message.text.trim();
+  if (!text.startsWith("http://127.0.0.1:")) return next();
+  if (!isOwner(ctx)) return next();
 
-import type { OAuthStateManager } from "../google/state.ts";
-import type { GoogleOAuth } from "../google/oauth.ts";
+  const pending = stateMgr.findPendingForChat(String(ctx.chat!.id));
+  if (!pending) return next();
 
-// Called when the bot receives /google-connect
-async function handleGoogleConnect(
-  chatId: string,
-  userId: string,
-  stateManager: OAuthStateManager,
-  oauth: GoogleOAuth,
-  sendMessage: (chatId: string, text: string) => Promise<void>,
-): Promise<void> {
-  const state   = stateManager.generate(chatId, userId);
-  const authUrl = oauth.buildAuthUrl(state);
-
-  await sendMessage(
-    chatId,
-    `To connect your Google account, open this link on any device on your local network:\n\n${authUrl}\n\nThis link expires in 10 minutes.`,
-  );
-}
+  // Route through the same handler path as /google-complete
+  await handleGoogleComplete(ctx, text);
+});
 ```
+
+**Design decision:** For v1, implement only the explicit `/google-complete <url>` form. The auto-detect path is a nice-to-have but adds an edge case where a message containing a 127.0.0.1 URL for unrelated reasons would be consumed. If autocomplete is added later, guard it with `findPendingForChat` to avoid false positives.
 
 ---
 
-### 6.9 Gmail API Client (`src/google/gmail.ts`)
+### 6.12 Gmail and Calendar API Clients
+
+Unchanged from the prior design. See the earlier TDD section (preserved here for completeness).
+
+#### `src/google/gmail.ts`
 
 ```typescript
-// src/google/gmail.ts
-
 import type { GoogleTokenStore } from "./token-store.ts";
 import type { CompactEmail, CompactEmailDetail } from "./types.ts";
 import { normalizeGmailMessage, normalizeGmailMessageDetail } from "./normalize-gmail.ts";
@@ -846,74 +1108,51 @@ import { normalizeGmailMessage, normalizeGmailMessageDetail } from "./normalize-
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
 export class GmailClient {
-  constructor(private readonly tokenStore: GoogleTokenStore) {}
+  constructor(private readonly tokens: GoogleTokenStore) {}
 
   private async headers(): Promise<HeadersInit> {
-    const token = await this.tokenStore.getAccessToken();
-    return { Authorization: `Bearer ${token}` };
+    return { Authorization: `Bearer ${await this.tokens.getAccessToken()}` };
   }
 
-  async listRecent(params: {
-    newerThanHours: number;
-    maxResults: number;
-    labelIds?: string[];
-    query?: string;
+  async listRecent(p: {
+    newerThanHours: number; maxResults: number;
+    labelIds?: string[]; query?: string;
   }): Promise<CompactEmail[]> {
-    const q = buildGmailQuery(params);
+    const q = [`newer_than:${p.newerThanHours}h`, p.query].filter(Boolean).join(" ");
     const url = new URL(`${GMAIL_BASE}/messages`);
-    url.searchParams.set("maxResults", String(Math.min(params.maxResults, 50)));
+    url.searchParams.set("maxResults", String(Math.min(p.maxResults, 50)));
     url.searchParams.set("q", q);
-    if (params.labelIds?.length) {
-      params.labelIds.forEach((l) => url.searchParams.append("labelIds", l));
-    }
-
-    const resp = await fetch(url, { headers: await this.headers() });
-    if (!resp.ok) throw new Error(`Gmail list failed: ${resp.status}`);
-
-    const data = await resp.json() as { messages?: Array<{ id: string; threadId: string }> };
-    const messages = data.messages ?? [];
-
-    // Fetch each message header in parallel (bounded)
+    p.labelIds?.forEach(l => url.searchParams.append("labelIds", l));
+    const r = await fetch(url, { headers: await this.headers() });
+    if (!r.ok) throw new Error(`Gmail list failed: ${r.status}`);
+    const data = await r.json() as { messages?: Array<{ id: string }> };
     const details = await Promise.all(
-      messages.slice(0, params.maxResults).map((m) => this.fetchMessageHeaders(m.id)),
+      (data.messages ?? []).slice(0, p.maxResults).map(m => this.fetchHeaders(m.id)),
     );
-
     return details.filter((d): d is CompactEmail => d !== null);
   }
 
-  private async fetchMessageHeaders(id: string): Promise<CompactEmail | null> {
-    const url = `${GMAIL_BASE}/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
-    const resp = await fetch(url, { headers: await this.headers() });
-    if (!resp.ok) return null;
-    const raw = await resp.json();
-    return normalizeGmailMessage(raw);
+  private async fetchHeaders(id: string): Promise<CompactEmail | null> {
+    const url = `${GMAIL_BASE}/messages/${id}?format=metadata` +
+                `&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`;
+    const r = await fetch(url, { headers: await this.headers() });
+    if (!r.ok) return null;
+    return normalizeGmailMessage(await r.json());
   }
 
-  async getMessage(params: { id: string }): Promise<CompactEmailDetail | null> {
-    const url = `${GMAIL_BASE}/messages/${params.id}?format=full`;
-    const resp = await fetch(url, { headers: await this.headers() });
-    if (!resp.ok) return null;
-    const raw = await resp.json();
-    return normalizeGmailMessageDetail(raw);
+  async getMessage(p: { id: string }): Promise<CompactEmailDetail | null> {
+    const r = await fetch(`${GMAIL_BASE}/messages/${p.id}?format=full`, {
+      headers: await this.headers(),
+    });
+    if (!r.ok) return null;
+    return normalizeGmailMessageDetail(await r.json());
   }
-}
-
-function buildGmailQuery(params: { newerThanHours: number; query?: string }): string {
-  const parts: string[] = [`newer_than:${params.newerThanHours}h`];
-  if (params.query) parts.push(params.query);
-  return parts.join(" ");
 }
 ```
 
----
-
-### 6.10 Gmail Normalizer (`src/google/normalize-gmail.ts`)
-
-Raw Gmail API responses contain MIME trees, base64-encoded bodies, and dozens of headers. This normalizer extracts only what the model needs.
+#### `src/google/normalize-gmail.ts`
 
 ```typescript
-// src/google/normalize-gmail.ts
-
 import type { CompactEmail, CompactEmailDetail } from "./types.ts";
 
 const EXCERPT_MAX = 2000;
@@ -921,369 +1160,90 @@ const SNIPPET_MAX = 300;
 
 export function normalizeGmailMessage(raw: any): CompactEmail | null {
   try {
-    const headers: Array<{ name: string; value: string }> = raw.payload?.headers ?? [];
-    const get = (name: string) =>
-      headers.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
-
+    const h: Array<{ name: string; value: string }> = raw.payload?.headers ?? [];
+    const get = (n: string) => h.find(x => x.name.toLowerCase() === n.toLowerCase())?.value ?? "";
     return {
       id:         raw.id,
       threadId:   raw.threadId,
       from:       get("From"),
       subject:    get("Subject"),
-      receivedAt: internalDateToIso(raw.internalDate),
-      snippet:    (raw.snippet ?? "").slice(0, SNIPPET_MAX),
+      receivedAt: new Date(parseInt(raw.internalDate ?? "0", 10)).toISOString(),
+      snippet:    String(raw.snippet ?? "").slice(0, SNIPPET_MAX),
       labels:     raw.labelIds ?? [],
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export function normalizeGmailMessageDetail(raw: any): CompactEmailDetail | null {
   const base = normalizeGmailMessage(raw);
   if (!base) return null;
-
-  const excerpt = extractTextBody(raw.payload) ?? "";
-  return {
-    ...base,
-    excerpt: excerpt.slice(0, EXCERPT_MAX),
-  };
+  return { ...base, excerpt: (extractText(raw.payload) ?? "").slice(0, EXCERPT_MAX) };
 }
 
-function internalDateToIso(internalDate: string | undefined): string {
-  if (!internalDate) return new Date().toISOString();
-  return new Date(parseInt(internalDate, 10)).toISOString();
-}
-
-/**
- * Recursively find the first text/plain part in the MIME tree.
- * Falls back to text/html stripped of tags if no plain text found.
- */
-function extractTextBody(payload: any): string | null {
+function extractText(payload: any): string | null {
   if (!payload) return null;
-
-  const mimeType: string = payload.mimeType ?? "";
-
-  if (mimeType === "text/plain" && payload.body?.data) {
-    return decodeBase64Url(payload.body.data);
-  }
-
+  const mt: string = payload.mimeType ?? "";
+  if (mt === "text/plain" && payload.body?.data) return decode(payload.body.data);
   if (payload.parts) {
-    // Prefer text/plain
-    for (const part of payload.parts) {
-      if (part.mimeType === "text/plain") {
-        const text = extractTextBody(part);
-        if (text) return text;
-      }
+    for (const p of payload.parts) if (p.mimeType === "text/plain") {
+      const t = extractText(p); if (t) return t;
     }
-    // Fall back to any part
-    for (const part of payload.parts) {
-      const text = extractTextBody(part);
-      if (text) return text;
-    }
+    for (const p of payload.parts) { const t = extractText(p); if (t) return t; }
   }
-
-  if (mimeType === "text/html" && payload.body?.data) {
-    return stripHtmlTags(decodeBase64Url(payload.body.data));
-  }
-
+  if (mt === "text/html" && payload.body?.data) return stripHtml(decode(payload.body.data));
   return null;
 }
 
-function decodeBase64Url(encoded: string): string {
-  const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-  return Buffer.from(base64, "base64").toString("utf-8");
+function decode(b64url: string): string {
+  return Buffer.from(b64url.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf-8");
 }
 
-function stripHtmlTags(html: string): string {
-  return html
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+function stripHtml(s: string): string {
+  return s.replace(/<style[\s\S]*?<\/style>/gi, "")
+          .replace(/<script[\s\S]*?<\/script>/gi, "")
+          .replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim();
 }
 ```
+
+#### `src/google/calendar.ts` and `src/google/normalize-calendar.ts`
+
+Identical to the earlier design. See the previous TDD revision; the API client uses `tokenStore.getAccessToken()` the same way Gmail does.
 
 ---
 
-### 6.11 Calendar API Client (`src/google/calendar.ts`)
+### 6.13 Agent Tools
 
-```typescript
-// src/google/calendar.ts
-
-import type { GoogleTokenStore } from "./token-store.ts";
-import type { CompactCalendarEvent } from "./types.ts";
-import { normalizeCalendarEvent } from "./normalize-calendar.ts";
-
-const CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
-
-export class CalendarClient {
-  constructor(private readonly tokenStore: GoogleTokenStore) {}
-
-  private async headers(): Promise<HeadersInit> {
-    const token = await this.tokenStore.getAccessToken();
-    return { Authorization: `Bearer ${token}` };
-  }
-
-  async listWindow(params: {
-    startIso: string;
-    endIso: string;
-    calendarIds?: string[];
-    maxResults?: number;
-  }): Promise<CompactCalendarEvent[]> {
-    const calendarIds = params.calendarIds ?? ["primary"];
-    const maxResults  = Math.min(params.maxResults ?? 20, 50);
-
-    // Fetch from each calendar in parallel
-    const perCalendar = await Promise.all(
-      calendarIds.map((calId) =>
-        this.listCalendarWindow(calId, params.startIso, params.endIso, maxResults),
-      ),
-    );
-
-    // Merge, sort by start time, cap total
-    return perCalendar
-      .flat()
-      .sort((a, b) => a.start.localeCompare(b.start))
-      .slice(0, maxResults);
-  }
-
-  private async listCalendarWindow(
-    calendarId: string,
-    timeMin: string,
-    timeMax: string,
-    maxResults: number,
-  ): Promise<CompactCalendarEvent[]> {
-    const url = new URL(`${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events`);
-    url.searchParams.set("timeMin", timeMin);
-    url.searchParams.set("timeMax", timeMax);
-    url.searchParams.set("maxResults", String(maxResults));
-    url.searchParams.set("singleEvents", "true");
-    url.searchParams.set("orderBy", "startTime");
-
-    const resp = await fetch(url, { headers: await this.headers() });
-    if (!resp.ok) {
-      // Non-fatal: return empty list for this calendar
-      return [];
-    }
-
-    const data = await resp.json() as { items?: any[] };
-    return (data.items ?? [])
-      .map((item: any) => normalizeCalendarEvent(item, calendarId))
-      .filter((e): e is CompactCalendarEvent => e !== null);
-  }
-}
-```
-
----
-
-### 6.12 Calendar Normalizer (`src/google/normalize-calendar.ts`)
-
-```typescript
-// src/google/normalize-calendar.ts
-
-import type { CompactCalendarEvent } from "./types.ts";
-
-const DESCRIPTION_MAX = 500;
-
-export function normalizeCalendarEvent(raw: any, calendarId?: string): CompactCalendarEvent | null {
-  try {
-    return {
-      id:    raw.id,
-      title: raw.summary ?? "(No title)",
-      start: normalizeDateTime(raw.start),
-      end:   raw.end ? normalizeDateTime(raw.end) : undefined,
-      location:            raw.location?.slice(0, 200) ?? undefined,
-      descriptionExcerpt:  raw.description
-        ? stripHtml(raw.description).slice(0, DESCRIPTION_MAX)
-        : undefined,
-      calendarId,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Google Calendar events can have either dateTime (timed) or date (all-day).
- */
-function normalizeDateTime(dt: { dateTime?: string; date?: string }): string {
-  return dt.dateTime ?? dt.date ?? "";
-}
-
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]+>/g, " ").replace(/\s{2,}/g, " ").trim();
-}
-```
-
----
-
-### 6.13 Tool Implementations
-
-#### `gmail_list_recent` (`src/tools/gmail-list-recent.ts`)
-
-```typescript
-import type { ToolHandler, ToolContext } from "../agent/types.ts";
-import type { GmailClient } from "../google/gmail.ts";
-import { z } from "zod";
-
-const ArgsSchema = z.object({
-  newerThanHours: z.number().int().min(1).max(168).default(24)
-    .describe("How many hours back to search (max 168 = 1 week)"),
-  maxResults: z.number().int().min(1).max(20).default(10)
-    .describe("Maximum number of emails to return"),
-  query: z.string().optional()
-    .describe("Optional Gmail search query (e.g. 'is:unread', 'from:someone@example.com')"),
-});
-
-type Args = z.infer<typeof ArgsSchema>;
-
-export function makeGmailListRecentTool(gmail: GmailClient): ToolHandler<Args, string> {
-  return {
-    name: "gmail_list_recent",
-    description:
-      "List recent emails. Returns sender, subject, timestamp, and snippet. " +
-      "Use gmail_get_message to read the full body of a specific email.",
-    schema: ArgsSchema,
-    async execute(args, ctx: ToolContext) {
-      const emails = await gmail.listRecent({
-        newerThanHours: args.newerThanHours,
-        maxResults:     args.maxResults,
-        query:          args.query,
-      });
-      if (emails.length === 0) return "No emails found matching the criteria.";
-      return emails
-        .map(
-          (e) =>
-            `[${e.id}] ${e.receivedAt} | From: ${e.from} | Subject: ${e.subject}\n  ${e.snippet}`,
-        )
-        .join("\n\n");
-    },
-  };
-}
-```
-
-#### `gmail_get_message` (`src/tools/gmail-get-message.ts`)
-
-```typescript
-import type { ToolHandler, ToolContext } from "../agent/types.ts";
-import type { GmailClient } from "../google/gmail.ts";
-import { z } from "zod";
-
-const ArgsSchema = z.object({
-  id: z.string().describe("The Gmail message ID from gmail_list_recent"),
-});
-
-type Args = z.infer<typeof ArgsSchema>;
-
-export function makeGmailGetMessageTool(gmail: GmailClient): ToolHandler<Args, string> {
-  return {
-    name: "gmail_get_message",
-    description: "Fetch the full body of a specific email by its ID.",
-    schema: ArgsSchema,
-    async execute(args, _ctx: ToolContext) {
-      const msg = await gmail.getMessage({ id: args.id });
-      if (!msg) return `Email ${args.id} not found.`;
-      return [
-        `From: ${msg.from}`,
-        `Subject: ${msg.subject}`,
-        `Date: ${msg.receivedAt}`,
-        ``,
-        msg.excerpt || "(No readable body)",
-      ].join("\n");
-    },
-  };
-}
-```
-
-#### `calendar_list_today` / `calendar_list_tomorrow`
-
-```typescript
-// src/tools/calendar-list-today.ts
-
-import type { ToolHandler, ToolContext } from "../agent/types.ts";
-import type { CalendarClient } from "../google/calendar.ts";
-import { z } from "zod";
-
-const ArgsSchema = z.object({
-  calendarIds: z.array(z.string()).optional()
-    .describe("Calendar IDs to query. Defaults to ['primary']."),
-});
-
-type Args = z.infer<typeof ArgsSchema>;
-
-function todayWindow(timezone: string): { startIso: string; endIso: string } {
-  const now = new Date();
-  // Compute local midnight in the configured timezone
-  const fmt = (d: Date) => d.toISOString();
-  const startOfDay = new Date(now.toLocaleDateString("en-CA", { timeZone: timezone }) + "T00:00:00");
-  const endOfDay   = new Date(now.toLocaleDateString("en-CA", { timeZone: timezone }) + "T23:59:59");
-  return { startIso: fmt(startOfDay), endIso: fmt(endOfDay) };
-}
-
-export function makeCalendarListTodayTool(
-  calendar: CalendarClient,
-  timezone: string,
-): ToolHandler<Args, string> {
-  return {
-    name: "calendar_list_today",
-    description: "List calendar events for today.",
-    schema: ArgsSchema,
-    async execute(args, _ctx: ToolContext) {
-      const window = todayWindow(timezone);
-      const events = await calendar.listWindow({
-        ...window,
-        calendarIds: args.calendarIds,
-        maxResults: 20,
-      });
-      if (events.length === 0) return "No events today.";
-      return events
-        .map((e) => `${e.start}${e.end ? ` – ${e.end}` : ""} | ${e.title}${e.location ? ` @ ${e.location}` : ""}`)
-        .join("\n");
-    },
-  };
-}
-```
-
-The `calendar_list_tomorrow` tool is identical except the window is computed for the next calendar day.
+Unchanged from the prior design. See the IP for formatted output specifications.
 
 ---
 
 ### 6.14 Token Redaction (`src/security/redact.ts`)
 
-Any log line that could contain an access token, refresh token, or full callback URL must be sanitized before writing.
+Expanded to also redact authorization codes in log output, since the paste-back flow creates log entries that contain the user's pasted URL.
 
 ```typescript
-// src/security/redact.ts
-
-const TOKEN_PATTERN = /ya29\.[A-Za-z0-9_\-]+/g;
-const REFRESH_PATTERN = /1\/\/[A-Za-z0-9_\-]+/g;
-const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9_\-\.]+/gi;
+const ACCESS_TOKEN_RE  = /ya29\.[A-Za-z0-9_\-]+/g;
+const REFRESH_TOKEN_RE = /1\/\/[A-Za-z0-9_\-]+/g;
+const BEARER_RE        = /Bearer\s+[A-Za-z0-9_\-\.]+/gi;
+// Google auth codes begin with "4/" and are short-lived but still sensitive
+const AUTH_CODE_RE     = /\b4\/[0-9A-Za-z_\-]+/g;
 
 export function redact(value: string): string {
   return value
-    .replace(TOKEN_PATTERN, "[ACCESS_TOKEN]")
-    .replace(REFRESH_PATTERN, "[REFRESH_TOKEN]")
-    .replace(BEARER_PATTERN, "Bearer [REDACTED]");
+    .replace(ACCESS_TOKEN_RE,  "[ACCESS_TOKEN]")
+    .replace(REFRESH_TOKEN_RE, "[REFRESH_TOKEN]")
+    .replace(BEARER_RE,        "Bearer [REDACTED]")
+    .replace(AUTH_CODE_RE,     "[AUTH_CODE]");
 }
 
-/**
- * Redact sensitive keys from an object before logging.
- * Use this when logging the full query string from the OAuth callback.
- */
 export function redactQueryParams(url: string): string {
   try {
     const u = new URL(url);
-    for (const key of ["code", "access_token", "refresh_token", "token"]) {
-      if (u.searchParams.has(key)) {
-        u.searchParams.set(key, "[REDACTED]");
-      }
+    for (const k of ["code", "access_token", "refresh_token", "token", "state"]) {
+      if (u.searchParams.has(k)) u.searchParams.set(k, "[REDACTED]");
     }
     return u.toString();
-  } catch {
-    return "[invalid url]";
-  }
+  } catch { return "[invalid url]"; }
 }
 ```
 
@@ -1291,7 +1251,19 @@ export function redactQueryParams(url: string): string {
 
 ## 7. Database Schema
 
-The OAuth subsystem uses two tables from the main schema.
+### `google_client`
+
+```sql
+CREATE TABLE IF NOT EXISTS google_client (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  client_id     TEXT NOT NULL,
+  client_secret TEXT NOT NULL,
+  project_id    TEXT,
+  updated_at    TEXT NOT NULL
+);
+```
+
+Singleton-row table. The `CHECK (id = 1)` constraint prevents accidentally storing multiple client credentials.
 
 ### `oauth_states`
 
@@ -1301,17 +1273,18 @@ CREATE TABLE IF NOT EXISTS oauth_states (
   provider         TEXT NOT NULL,
   telegram_chat_id TEXT NOT NULL,
   telegram_user_id TEXT NOT NULL,
+  redirect_uri     TEXT NOT NULL,
+  hint_email       TEXT,
   created_at       TEXT NOT NULL,
   expires_at       TEXT NOT NULL,
   consumed_at      TEXT
 );
-```
 
-An index on `expires_at` speeds up the `purgeExpired()` query:
-
-```sql
 CREATE INDEX IF NOT EXISTS idx_oauth_states_expires_at ON oauth_states (expires_at);
+CREATE INDEX IF NOT EXISTS idx_oauth_states_chat      ON oauth_states (telegram_chat_id);
 ```
+
+`redirect_uri` is stored so the token exchange can use the exact same URI string Google was given during authorization.
 
 ### `credentials`
 
@@ -1326,7 +1299,7 @@ CREATE TABLE IF NOT EXISTS credentials (
 );
 ```
 
-The `token_json` column stores a JSON-serialized `TokenSet` which contains both `accessToken` and `refreshToken`. In v1, there is at most one row per provider.
+Same as the main TDD. `token_json` stores the full `TokenSet` including the refresh token.
 
 ---
 
@@ -1334,45 +1307,50 @@ The `token_json` column stores a JSON-serialized `TokenSet` which contains both 
 
 ### 8.1 CSRF Protection
 
-The `state` parameter is 32 bytes of cryptographically random data encoded as base64url. It is generated per authorization attempt and stored in the `oauth_states` table. It is validated and atomically consumed on callback. An attacker who does not know the state value cannot complete the callback even if they can send a request to the callback URL.
+The `state` parameter is 32 random bytes, base64url-encoded. Stored in `oauth_states`, validated on paste-back, atomically consumed (`UPDATE ... WHERE consumed_at IS NULL`).
 
-### 8.2 Single-Use State Tokens
+### 8.2 Redirect URI Binding
 
-The `validateAndConsume()` method uses an atomic `UPDATE ... WHERE consumed_at IS NULL` to ensure a state token can only be used once. SQLite's serialized write model guarantees this even under concurrent requests.
+The redirect URI is generated per authorization and persisted with the state. During paste-back, the handler requires an exact match between the stored URI and the one reconstructed from the pasted URL. A mismatch fails the flow. This prevents an attacker who obtains a user's state token from tricking the system into redeeming a code against a different `redirect_uri`.
 
-### 8.3 Token Storage
+### 8.3 Client Secret Storage
 
-In v1, the `TokenSet` JSON (including `refreshToken`) is stored in plain text in the SQLite `credentials` table. The database file should have restricted permissions (`chmod 600`). Encryption at rest is deferred to Phase 5 hardening.
+The user-uploaded `client_secret` is stored in plain text in the `google_client` table. The SQLite database file should have `chmod 600`. Encryption at rest is Phase 5 hardening.
 
-The refresh token must never appear in logs. The `redact.ts` utilities should be applied to any log fields that could transitively include token values.
+**Note:** Google's Desktop credential client secrets are not high-entropy secrets like user passwords — Google's own docs note that Desktop credentials "are not used as secrets" in the same way as Web credentials, because they are embedded in distributable software. Still, they should not be logged or exposed.
 
-### 8.4 Redirect URI Registration
+### 8.4 Authorization Code Handling
 
-The redirect URI (`https://pi-auth.local/oauth/google/callback`) must be registered exactly in the Google Cloud Console under Authorized Redirect URIs for the Web Application credential. Google rejects any `redirect_uri` in the token exchange request that does not match a registered URI.
+Authorization codes are redacted in logs via `redact.ts`. They are single-use on Google's side, but redaction prevents leakage in case of log aggregation.
 
-### 8.5 State Expiry
+### 8.5 Ownership
 
-States expire after 10 minutes. The `purgeExpired()` method removes records older than 1 hour and should be called on startup and periodically (hourly is sufficient).
+All `/google-*` commands require `isOwner(ctx)` passing. Non-owners receive no response (silent ignore to avoid information disclosure).
 
-### 8.6 Credential Type Note
+### 8.6 File Upload Size Cap
 
-Web Application credentials are used (not Desktop/Installed). This is the correct type for a server-side OAuth flow with a stable redirect URI. Desktop/Installed credentials would also technically work if the redirect URI were changed to `http://localhost`, but that would introduce unnecessary confusion about the credential type's intended use.
+The `/google-setup` handler caps the uploaded file at 64 KB. A valid `client_secret.json` is well under 1 KB; 64 KB is a generous ceiling that prevents wasted bandwidth on pathological uploads.
 
 ---
 
 ## 9. Error Handling
 
-| Error | Detection | Handling |
-|-------|-----------|----------|
-| User denies consent | `?error=access_denied` in callback | HTML error page, log warning, no Telegram notification |
-| State not found / expired | `validateAndConsume` returns null | HTML error page (user-friendly), no crash |
-| State already consumed | Same as above — atomic UPDATE changes=0 | HTML error page |
-| Code exchange fails | Non-2xx from Google token endpoint | HTML 500 error page, log error with status |
-| No refresh_token in response | Check after exchange | Throw, caught by callback handler, HTML 500 page |
-| Token refresh fails | Non-2xx from Google token endpoint | Throw up the call stack; tool returns structured error to model |
-| Gmail API non-2xx | HTTP error | Throw; tool returns error string to model |
-| Calendar API non-2xx | HTTP error | Return empty list from that calendar; do not crash |
-| Telegram notification fails | grammy throws | Log warning, do not fail the overall callback flow |
+| Error | Detection | User-facing Handling |
+|-------|-----------|----------------------|
+| `/google-setup` without attachment | `ctx.message.document` undefined | Reply with usage guidance |
+| Uploaded file is not JSON | `JSON.parse` throws | Reply: "File is not valid JSON" |
+| Uploaded file is Web credential | `json.web` present, `installed` absent | Explain the Desktop vs Web difference |
+| Uploaded file missing client_id/secret | Parser check | Reply: "Missing client_id or client_secret" |
+| `/google-connect` with no client creds | `clientStore.read()` returns null | Prompt user to run `/google-setup` first |
+| `/google-complete` with invalid URL | `parseRedirectUrl` throws | Reply with specific parser error message |
+| `?error=access_denied` in URL | `parseRedirectUrl` raises InvalidRedirectError | Reply: "Google returned error: access_denied" |
+| State unknown/expired/consumed | `validateAndConsume` returns null | Reply: "link expired... run /google-connect to start over" |
+| Redirect URI mismatch | Compare stored vs pasted | Reply: "URL doesn't match... start over" |
+| Code exchange fails | Google returns non-2xx | Log full error, user-facing generic failure message |
+| No `refresh_token` in response | `exchangeCode` throws | Explain: revoke at myaccount.google.com and retry |
+| Token refresh fails during API call | `getAccessToken` throws | Tool returns structured error to model |
+| Gmail API non-2xx | HTTP check | Tool returns error to model |
+| Calendar API non-2xx (per calendar) | HTTP check | That calendar's events omitted; others still served |
 
 ---
 
@@ -1380,63 +1358,67 @@ Web Application credentials are used (not Desktop/Installed). This is the correc
 
 ### 10.1 Unit Tests
 
-| Module | What to Test |
-|--------|-------------|
-| `state.ts` | `generate()` produces 43-char base64url strings; `validateAndConsume()` returns null for expired/consumed states; concurrent consume calls — only one wins |
-| `oauth.ts` | `buildAuthUrl()` includes all required parameters; `exchangeCode()` parses response correctly; throws on missing `refresh_token` |
-| `normalize-gmail.ts` | Extracts plain text from MIME tree; falls back to HTML with tag stripping; handles missing headers gracefully |
-| `normalize-calendar.ts` | Handles `date` vs `dateTime` events; caps description length |
-| `token-store.ts` | `getAccessToken()` triggers refresh when within buffer; persists refreshed token; throws when no credentials stored |
-| `redact.ts` | Redacts access tokens, refresh tokens, bearer headers, code params from URLs |
+| Module | Critical Test Cases |
+|--------|--------------------|
+| `parse-client-secret.ts` | Valid `installed` block passes; missing keys throw; `web` block rejected with helpful message; invalid JSON throws |
+| `parse-redirect.ts` | Valid URL with code and state parses; missing code throws; `?error=xxx` throws with that error name; base URI reconstruction preserves non-default ports |
+| `redirect-uri.ts` | Produces URI in dynamic port range; URI is parseable |
+| `state.ts` | 43-char base64url state; atomic single-use consume; expired state returns null; `findPendingForChat` returns most recent unused state |
+| `oauth.ts` | `buildAuthUrl` includes all required params including `login_hint` when provided; omits `login_hint` when absent; `exchangeCode` parses response; throws on missing refresh_token; non-2xx throws |
+| `token-store.ts` | Fresh token returned without refresh; token within 5-min buffer triggers refresh; refresh result persisted; missing client creds during refresh throws |
+| `normalize-gmail.ts` | Extracts headers; prefers text/plain; falls back to stripped HTML; caps excerpt |
+| `normalize-calendar.ts` | Handles dateTime and date formats; caps description |
+| `redact.ts` | Redacts tokens, bearer headers, auth codes, query params |
 
-### 10.2 Integration Tests
+### 10.2 Integration Tests (with mocked `fetch`)
 
-| Flow | Approach |
-|------|---------|
-| Full OAuth callback | Mock `fetch` for token exchange endpoint; call route handler directly; assert state consumed and token stored |
-| Token refresh | Pre-populate DB with expired token; call `getAccessToken()`; assert refresh called and new token stored |
-| Gmail list | Mock `fetch` for Gmail API; assert normalizer applied; assert bounded result count |
-| Calendar list | Mock `fetch` for Calendar API; assert multi-calendar merge and sort |
-| Expired state rejection | Insert expired state; call callback handler; assert HTML contains error message |
+| Flow | Setup | Assertion |
+|------|-------|-----------|
+| Full happy path | Seed `google_client` row; generate state; call `/google-complete` handler with a synthetic paste; mock token endpoint | Credential row exists with correct email; state consumed |
+| Expired state rejected | Insert expired state; call handler | Reply contains "expired"; no credential written |
+| Already-consumed state rejected | Generate and consume, then re-attempt | Reply contains "already used" |
+| Redirect URI mismatch | Generate state with one URI; paste URL with different port | Reply contains "doesn't match"; state consumed once (no reuse); no credential written |
+| Web credential upload rejected | Post `client_secret.json` with `web` key | Error mentions Desktop vs Web; no row in `google_client` |
+| Token refresh near expiry | Pre-insert token 2 minutes from expiry; call `gmail_list_recent` | Refresh endpoint called; new token persisted |
 
-### 10.3 What Cannot Be Unit-Tested Without Real Credentials
+### 10.3 Manual Smoke Test (with real Google account)
 
-- Actual Google consent screen flow
-- Real token exchange
-- Real API responses from Gmail and Calendar
+Document in `docs/manual-oauth-test.md`:
 
-These require live smoke tests with real credentials and are performed manually or via a dedicated integration test environment with a test Google account.
+1. Create Desktop credential in Google Cloud Console; download JSON
+2. Enable Gmail API and Calendar API
+3. Telegram: `/google-setup` with file attached → expect "Saved" reply
+4. Telegram: `/google-connect your@gmail.com` → expect URL reply with `login_hint` in the auth URL
+5. Open URL in browser on phone; approve consent
+6. Copy URL from address bar (should start with `http://127.0.0.1:`)
+7. Telegram: `/google-complete <paste>` → expect "Connected as..." reply
+8. Telegram: "what's in my inbox" → expect agent to call `gmail_list_recent` and return results
 
 ---
 
-## 11. LAN Deployment Requirements
+## 11. What Changed From the Previous Design
 
-### 11.1 Required Infrastructure
+For implementers transitioning from v0.1 of this document:
 
-- Pi accessible on LAN at a stable hostname (e.g., `pi-auth.local` or a local DNS entry)
-- HTTPS termination: Caddy reverse proxy on the Pi, using a LAN-only certificate (Let's Encrypt with DNS-01 challenge, or a self-signed cert trusted on LAN devices)
-- Node app listens on `127.0.0.1:{callbackPort}` (not exposed to LAN directly)
-- Caddy proxies `https://pi-auth.local/oauth/*` → `http://127.0.0.1:{callbackPort}/oauth/*`
+| Removed | Added |
+|---------|-------|
+| Hono HTTP route `/oauth/google/callback` | `/google-complete` Telegram command |
+| `src/api/google-callback.ts` | `src/google/parse-redirect.ts` |
+| Hono server wiring for OAuth | `src/google/redirect-uri.ts` |
+| LAN hostname / reverse proxy / HTTPS requirements | User-uploaded `client_secret.json` via `/google-setup` |
+| Web Application credential type | Desktop (Installed) credential type |
+| Config fields `google.clientId`, `google.clientSecret`, `google.redirectBaseUrl`, `auth.callbackHost`, `auth.callbackPort` | `google_client` SQLite table |
+| Static `OAuthConfig` bound at bootstrap | `GoogleOAuth` takes credentials per call; `GoogleTokenStore` reads them from `client-store` on demand |
+| — | `redirect_uri` column on `oauth_states` |
+| — | `google_client` SQLite table |
 
-### 11.2 Google Cloud Console Configuration
-
-1. Create a project (or reuse existing).
-2. Enable the Gmail API and Google Calendar API.
-3. Create OAuth 2.0 credentials of type **Web Application**.
-4. Add `https://pi-auth.local/oauth/google/callback` (or your chosen hostname) to **Authorized redirect URIs**.
-5. Download the `client_id` and `client_secret` and add them to the tdmClaw config.
-
-### 11.3 Why HTTPS Is Required
-
-Google's authorization server will not redirect to `http://` URIs on non-localhost hostnames (it rejects them as insecure). Since the Pi's hostname is not `localhost` from the perspective of the user's browser (it is a LAN hostname), HTTPS is required for the redirect URI.
-
-The one exception: during local development, `http://localhost:PORT/oauth/google/callback` works and can be registered as a Web Application redirect URI.
+The only HTTP server in the project now is whatever you choose to run for `/healthz` — and that's optional; it is not needed for OAuth.
 
 ---
 
 ## 12. Open Questions
 
-1. Should the `credentials` table use per-account primary keys in anticipation of multi-account support, or is `provider TEXT PRIMARY KEY` acceptable for v1?
-2. Should `purgeExpired()` run on a timer inside the main process, or only on startup?
-3. When the user runs `/google-connect` while credentials already exist, should the flow warn the user and overwrite, or require an explicit `/google-disconnect` first?
-4. Should the success/error HTML pages be inline (as in this design) or served from template files?
+1. Should `/google-complete` accept a raw pasted URL as a message (auto-detect) in addition to the command form? v1 answer: no, to avoid edge cases.
+2. Should uploaded `client_secret.json` files be validated against a JSON schema more rigorously, or is the current "must have installed.client_id and installed.client_secret" check sufficient?
+3. Should the bot delete the user's message containing the pasted URL after processing, to avoid it sitting in Telegram history with an auth code? Codes are single-use and short-lived, so arguably unnecessary, but possible for paranoid users.
+4. If `/google-connect` is called while a pending state already exists for the chat, should the new call invalidate the old state? v1 answer: no, multiple concurrent pending states are harmless and both have 10-minute TTLs.

@@ -265,9 +265,6 @@ export type AppConfig = {
   };
   google: {
     enabled: boolean;
-    clientId: string;
-    clientSecret: string;
-    redirectBaseUrl: string;
     scopes: {
       gmailRead: boolean;
       calendarRead: boolean;
@@ -278,11 +275,6 @@ export type AppConfig = {
     enabled: boolean;
     pollIntervalSeconds: number;
     catchUpWindowMinutes: number;
-  };
-  auth: {
-    callbackHost: string;
-    callbackPort: number;
-    secureCookies: boolean;
   };
 };
 ```
@@ -295,9 +287,9 @@ Minimum configuration for v1:
 - allowed Telegram user id
 - workspace root
 - model provider URL and model id
-- Google OAuth client id and secret
-- redirect base URL
 - scheduler timezone
+
+Google OAuth client credentials are uploaded at runtime via the `/google-setup` Telegram command and stored in the `google_client` SQLite table — not in config.
 
 ## 8. Subsystem Design
 
@@ -330,7 +322,7 @@ Minimum configuration for v1:
 8. create agent runtime
 9. create Telegram adapter
 10. create scheduler
-11. start local API server
+11. start local HTTP server (healthz only)
 12. start Telegram polling
 13. start scheduler loop
 
@@ -767,61 +759,23 @@ The Google connector is first-party code, not a wrapper over a skill system.
 
 ### Responsibilities
 
-- create auth URL
-- validate state
-- exchange code for tokens
-- refresh tokens
+- accept user-uploaded `client_secret.json` and store credentials in `google_client` table
+- build auth URL (with `login_hint`) for the loopback manual flow
+- validate and consume OAuth state on paste-back
+- exchange authorization code for tokens
+- refresh tokens on demand
 - issue Gmail and Calendar API requests
 - normalize raw API data
 
-## 8.10 Auth Callback API
+## 8.10 HTTP Server
 
-### Purpose
+The HTTP server exposes a single route for health checks. No OAuth callback route is needed — the Google OAuth flow uses the loopback manual flow (see `tdmClaw_GoogleOAuth_TDD.md`).
 
-Receive Google OAuth callbacks on the Raspberry Pi from devices on the same LAN.
+### Route
 
-### Deployment assumptions
+- `GET /healthz` — returns `{ "ok": true }`. Used by monitoring and systemd readiness checks.
 
-- Pi is reachable on LAN
-- a LAN-resolved hostname points to the Pi
-- HTTPS is terminated locally or via reverse proxy
-
-### Routes
-
-- `GET /healthz`
-- `GET /oauth/google/start`
-- `GET /oauth/google/callback`
-
-### Route behavior
-
-#### `GET /oauth/google/start`
-
-Normally invoked internally to generate an auth URL. If exposed, it should be guarded and stateful.
-
-#### `GET /oauth/google/callback`
-
-1. validate `state`
-2. exchange authorization code
-3. persist token set
-4. mark OAuth session complete
-5. render a simple HTML success page
-6. asynchronously notify Telegram
-
-### OAuth session state table
-
-Used to match Telegram-initiated auth flows with callback completions.
-
-```ts
-type OAuthStateRecord = {
-  state: string;
-  provider: "google";
-  telegramChatId: string;
-  telegramUserId: string;
-  createdAt: string;
-  expiresAt: string;
-  consumedAt?: string;
-};
-```
+No LAN hostname, HTTPS termination, or reverse proxy is required for OAuth.
 
 ## 8.11 Gmail Connector Design
 
@@ -1167,12 +1121,7 @@ Optional future optimization:
 
 ## 10.1 Local HTTP Server
 
-The HTTP server exists only for:
-
-- health checks
-- Google OAuth callback handling
-
-It is not intended as a full product API in v1.
+The HTTP server exists only for health checks. It is not intended as a full product API in v1, and no OAuth callback route is needed.
 
 ### Routes
 
@@ -1183,22 +1132,6 @@ Returns:
 ```json
 { "ok": true }
 ```
-
-#### `GET /oauth/google/callback`
-
-Query params:
-
-- `code`
-- `state`
-- `scope`
-
-Behavior:
-
-- validate state
-- exchange auth code
-- store credentials
-- send Telegram confirmation
-- render success HTML
 
 ## 11. Security Design
 
@@ -1349,31 +1282,30 @@ Default policy:
 - keep recent messages only
 - trim older content aggressively
 
-## 15. LAN-Only OAuth Technical Design
+## 15. Google OAuth Flow
 
-## 15.1 Assumptions
+## 15.1 Loopback Manual Flow
 
-- public inbound access is unavailable or undesirable
-- user devices are on the same LAN as the Pi
-- a real hostname is available and resolves inside the LAN
-- HTTPS is available locally
+tdmClaw uses the **loopback manual flow** for Google OAuth — the same approach as gogcli’s `--manual` mode. No HTTP server, LAN hostname, or HTTPS termination is required.
 
-## 15.2 Recommended Deployment Pattern
+How it works:
 
-- hostname example: `pi-auth.example.com`
-- local DNS resolves hostname to Pi’s private IP
-- HTTPS terminates on Pi via Caddy or reverse proxy
-- Node app listens on localhost or LAN interface
+1. The user sends `/google-connect their@gmail.com` in Telegram.
+2. The bot generates a redirect URI of the form `http://127.0.0.1:<port>/oauth2/callback` (no server listens on this port).
+3. The user opens the auth URL in any browser. Google redirects to the loopback URI after consent, which shows "connection refused" — the authorization code is visible in the address bar.
+4. The user copies the URL and sends it back via `/google-complete <url>`.
+5. The bot parses the code and state, validates the state against SQLite, exchanges the code for tokens, and confirms in Telegram.
 
-## 15.3 Why This Pattern
+The `login_hint` parameter (set to the email from `/google-connect`) pre-selects the account on Google’s consent screen.
 
-It avoids requiring:
+## 15.2 Why This Approach
 
-- Tailscale
-- public port forwarding
-- cloud tunnel dependency
+- No HTTP server, no HTTPS certs, no reverse proxy, no LAN DNS entry
+- Works from any device with a browser — not LAN-restricted
+- One copy-paste per authorization (a rare, acceptable operation)
+- Compatible with Google Desktop (Installed) OAuth credentials
 
-while still allowing a standards-compliant callback URL.
+See `tdmClaw_GoogleOAuth_TDD.md` for full component design and sequence diagrams.
 
 ## 16. Deployment Design
 

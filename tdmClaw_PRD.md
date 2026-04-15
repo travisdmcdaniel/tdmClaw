@@ -157,7 +157,7 @@ Reliability and debuggability are more important than maximum autonomy.
 1. User can send a Telegram message and receive a valid assistant response.
 2. Assistant can read and modify files inside a configured workspace.
 3. Assistant can execute bounded shell commands and return output.
-4. User can complete Google account authorization from another device on the same LAN.
+4. User can complete Google account authorization from any device with a browser.
 5. Assistant can retrieve Gmail and Calendar data after authorization.
 6. Daily briefing job runs automatically and sends a Telegram message at the configured time.
 
@@ -292,15 +292,17 @@ Requirements:
 
 ## 10.2 Authentication UX for Google
 
-The assistant should support a headless-server-compatible authorization flow where:
+The assistant uses a **loopback manual flow** that requires no HTTP server, LAN hostname, or HTTPS termination:
 
-1. the user requests Google connection in Telegram
-2. the assistant sends an authorization URL
-3. the user opens the URL from a device on the same LAN
-4. the callback is delivered to the Pi using a LAN-resolved hostname over HTTPS
-5. the assistant confirms completion in Telegram
+1. The user uploads `client_secret.json` once via `/google-setup`.
+2. The user runs `/google-connect their@gmail.com` in Telegram.
+3. The assistant sends an authorization URL (pre-populated with `login_hint` for the provided email).
+4. The user opens the URL in any browser on any device, approves the consent screen.
+5. The browser fails to connect to `127.0.0.1` — this is expected. The authorization code is visible in the address bar.
+6. The user copies the URL and sends it back via `/google-complete <url>`.
+7. The assistant confirms connection in Telegram.
 
-Fallback behavior may support a manual pasteback flow if needed during early development, but that should not be the preferred production UX.
+This flow works from any device with a browser and requires no network setup on the Pi.
 
 ## 10.3 Scheduler UX
 
@@ -504,7 +506,7 @@ The scheduler shall avoid duplicate execution after process restart.
 1. Credentials must not be exposed in Telegram replies.
 2. Workspace tools must enforce root boundaries.
 3. Command execution must be policy-constrained.
-4. Google OAuth callbacks must use HTTPS in the intended production flow.
+4. The loopback manual OAuth flow requires no inbound HTTPS — CSRF protection is provided by cryptographically random state tokens with a 10-minute TTL.
 
 ## 12.4 Maintainability
 
@@ -594,7 +596,7 @@ Supporting processes may include:
 
 - the tdmClaw Node.js service
 - a local model server, if applicable
-- optional reverse proxy for local HTTPS callback handling
+- a local model server, if applicable (no reverse proxy needed for OAuth)
 
 ## 14. Assistant Runtime Design
 
@@ -748,27 +750,27 @@ Rationale:
 
 ## 16.2 OAuth Flow Requirements
 
-The product must support a LAN-friendly headless-server flow.
+The product must support the loopback manual flow requiring no HTTP callback server.
 
-Preferred production flow:
+Production flow:
 
-1. user requests Google connect in Telegram
-2. assistant creates a stateful OAuth session
-3. assistant sends a Google authorization URL
-4. user opens the link on a phone or laptop on the same LAN
-5. Google redirects to a LAN-resolved HTTPS hostname served by the Pi
-6. Pi exchanges the authorization code for tokens
-7. assistant confirms success in Telegram
+1. User uploads `client_secret.json` once via `/google-setup` (Telegram document attachment).
+2. User runs `/google-connect their@gmail.com` in Telegram.
+3. Assistant creates a stateful OAuth session and sends an authorization URL with `login_hint`.
+4. User opens the URL in any browser, approves consent.
+5. Browser fails to connect to loopback address — code is visible in address bar.
+6. User copies URL and sends it back via `/google-complete <url>`.
+7. Assistant validates state, exchanges code for tokens, confirms in Telegram.
 
 ## 16.3 Callback Requirements
 
-Because the Pi is headless and may not be reachable from the public internet:
+The loopback manual flow has no network callback requirements:
 
-- callback routing should work from devices on the local network
-- the app should support a domain or hostname that resolves to the Pi inside the LAN
-- the callback endpoint should use HTTPS
-
-Fallback implementation may temporarily support a pasteback flow during development, but production requirements should prioritize a direct callback handler.
+- No HTTP server is needed for OAuth.
+- No LAN hostname or DNS entry is required.
+- No HTTPS certificate or reverse proxy is needed.
+- The redirect URI is an ephemeral loopback address (`http://127.0.0.1:<port>/...`) that nothing listens on.
+- The only user action beyond browser approval is one copy-paste of the failed redirect URL.
 
 ## 16.4 Token Storage Requirements
 
@@ -1069,9 +1071,10 @@ models:
   maxToolIterations: 4
 
 google:
-  clientId: env:GOOGLE_CLIENT_ID
-  clientSecret: env:GOOGLE_CLIENT_SECRET
-  redirectBaseUrl: https://pi-auth.example.com
+  enabled: true
+  scopes:
+    gmailRead: true
+    calendarRead: true
 
 scheduler:
   timezone: America/New_York
@@ -1099,13 +1102,9 @@ The product must include:
 - restart-on-failure behavior
 - environment file support
 
-## 23.3 Local HTTPS Support for OAuth
+## 23.3 Google OAuth Deployment Notes
 
-If using direct callbacks, the deployment should support:
-
-- a local HTTPS listener
-- a LAN-resolved hostname
-- certificate management instructions
+No local HTTPS listener, LAN hostname, or certificate is needed. The loopback manual flow works entirely through Telegram messages and a browser copy-paste. The only setup step is uploading `client_secret.json` via `/google-setup` and running `/google-connect <email>` once per Google account.
 
 ## 24. Error Handling Requirements
 
@@ -1155,15 +1154,16 @@ Mitigation:
 - cap iterations
 - preprocess external data deterministically
 
-## 26.2 Risk: OAuth Complexity on Headless LAN Deployment
+## 26.2 Risk: OAuth Setup Complexity
 
-Google authorization may be difficult without a public callback.
+Google authorization requires a one-time setup (uploading `client_secret.json` and running `/google-connect`).
 
 Mitigation:
 
-- support LAN-resolved HTTPS callback flow
-- provide clear setup steps
-- support temporary development fallback flow if necessary
+- loopback manual flow eliminates all network requirements
+- `/google-setup` validates the uploaded file with clear error messages
+- `/google-connect <email>` pre-selects the account via `login_hint`
+- `/google-status` shows current authorization state at any time
 
 ## 26.3 Risk: Dangerous Command Execution
 
@@ -1227,7 +1227,7 @@ tdmClaw v1 is complete when all of the following are true:
 2. The owner can interact with it through Telegram.
 3. It can read and modify files in a configured workspace.
 4. It can execute bounded shell commands and return results.
-5. It can complete Google account authorization from another device on the local network.
+5. It can complete Google account authorization from any device with a browser.
 6. It can read recent Gmail messages.
 7. It can read upcoming Google Calendar events.
 8. It can run at least one recurring daily briefing job and deliver the result to Telegram.

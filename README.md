@@ -25,8 +25,8 @@ A lightweight, self-hosted AI assistant designed to run continuously as a servic
 ### 1. Clone and run the installer
 
 ```bash
-git clone https://github.com/your-username/tdmclaw.git
-cd tdmclaw
+git clone https://github.com/travisdmcdaniel/tdmClaw.git
+cd tdmClaw
 bash install.sh
 ```
 
@@ -52,13 +52,21 @@ Sensitive values can also be provided as environment variables instead of in the
 
 ### 2. Connect your Google account (optional)
 
-In Telegram, send:
+First, upload your Google OAuth credentials. In Telegram, send `/google-setup` with your `client_secret.json` attached as a document. (Get this from Google Cloud Console → APIs & Services → Credentials → your Desktop OAuth Client ID → Download JSON.)
+
+Then authorize your account:
 
 ```
-/google-connect
+/google-connect your@gmail.com
 ```
 
-The assistant will send you an authorization URL. Open it from any device on your local network, complete the Google OAuth flow, and the assistant will confirm in Telegram.
+The assistant will send you an authorization URL. Open it in any browser on any device, approve the consent screen, then copy the URL from your browser's address bar (the page will fail to load — this is expected) and send it back with:
+
+```
+/google-complete <paste the URL here>
+```
+
+The assistant will confirm the connection in Telegram.
 
 ## Telegram Commands
 
@@ -68,7 +76,11 @@ The assistant will send you an authorization URL. Open it from any device on you
 | `/model` | Show the currently active model and fallback chain |
 | `/setmodel <name>` | Switch to a specific model |
 | `/setfallback <name> [name...]` | Set the ordered fallback model list |
-| `/google-connect` | Start Google OAuth authorization flow |
+| `/google-setup` | Upload your `client_secret.json` to configure Google OAuth credentials |
+| `/google-connect <email>` | Start Google OAuth authorization flow for the given email address |
+| `/google-complete <url>` | Complete OAuth by pasting the failed redirect URL from your browser |
+| `/google-status` | Show current Google authorization state |
+| `/google-disconnect` | Remove stored Google credentials |
 | `/jobs` | List scheduled jobs and their status |
 | `/briefing` | Run the daily briefing immediately |
 
@@ -109,16 +121,6 @@ This will create a dedicated service user, copy the built app and config to the 
 sudo systemctl status tdmclaw
 sudo journalctl -u tdmclaw -f
 ```
-
-### LAN HTTPS for Google OAuth callbacks
-
-Google requires an HTTPS callback URL. For a private LAN deployment:
-
-1. Point a domain (e.g. `pi-auth.example.com`) to your Pi's local IP via split-horizon DNS or `/etc/hosts` on your devices.
-2. Install [Caddy](https://caddyserver.com) on the Pi for automatic TLS termination.
-3. Set `google.redirectBaseUrl: https://pi-auth.example.com` in your config.
-
-See `docs/oauth-lan-setup.md` for detailed instructions.
 
 ## Configuration Reference
 

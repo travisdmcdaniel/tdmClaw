@@ -61,26 +61,37 @@
 
 ## Phase 3 — Google OAuth + Connectors
 
-**Goal:** Authorize Google account from a LAN device, read Gmail and Calendar.
+**Goal:** Authorize a Google account entirely through Telegram (no HTTP server, no LAN hostname), then read Gmail and Calendar.
+
+**Approach:** Loopback manual flow (same as gogcli `--manual`). The user uploads `client_secret.json` via `/google-setup`, runs `/google-connect` to get an auth URL, opens it in any browser, and pastes the failed-redirect URL back with `/google-complete`. No HTTP callback server is required.
+
+**Config change:** Remove `google.clientId`, `google.clientSecret`, `google.redirectBaseUrl`, and `auth.callbackHost/Port` from `config.yaml`. Client credentials are stored in SQLite (uploaded by the user), not in config. The only remaining Google config fields are `google.enabled` and `google.scopes`.
 
 | # | Task | Key Files |
 |---|------|-----------|
-| 3.1 | Local HTTP server (Hono) | `src/api/server.ts` |
-| 3.2 | `GET /healthz` route | `src/api/health.ts` |
-| 3.3 | OAuth state manager (generate, validate, consume, expire) | `src/google/state.ts`, `src/google/oauth.ts` |
-| 3.4 | `GET /oauth/google/callback` route | `src/api/google-callback.ts` |
-| 3.5 | Token store (SQLite `credentials` table, read/write/refresh) | `src/google/token-store.ts` |
-| 3.6 | Redaction utility (strip tokens from logs) | `src/security/redact.ts` |
-| 3.7 | Gmail API client + normalization | `src/google/gmail.ts`, `src/google/normalize-gmail.ts` |
-| 3.8 | Calendar API client + normalization | `src/google/calendar.ts`, `src/google/normalize-calendar.ts` |
-| 3.9 | `gmail_list_recent` tool | `src/tools/gmail-list-recent.ts` |
-| 3.10 | `gmail_get_message` tool | `src/tools/gmail-get-message.ts` |
-| 3.11 | `calendar_list_today` tool | `src/tools/calendar-list-today.ts` |
-| 3.12 | `calendar_list_tomorrow` tool | `src/tools/calendar-list-tomorrow.ts` |
-| 3.13 | Conditionally register Google tools in tool registry | `src/agent/tool-registry.ts` |
-| 3.14 | Telegram `/google-connect` command handler | `src/telegram/handler.ts` |
+| 3.1 | DB migration: add `google_client`, `oauth_states`, `credentials` tables | `src/storage/migrations.ts` |
+| 3.2 | Scope constants and `buildScopes()` builder | `src/google/scopes.ts` |
+| 3.3 | Shared types: `GoogleClientCredentials`, `TokenSet`, `ParsedRedirect`, compact email/calendar types | `src/google/types.ts` |
+| 3.4 | `client_secret.json` parser — validates Desktop vs Web credential, actionable errors | `src/google/parse-client-secret.ts` |
+| 3.5 | Client credentials store — upsert/read/delete for the `google_client` table | `src/google/client-store.ts` |
+| 3.6 | Redirect URI generator — random loopback port in dynamic range (49152–65535), nothing listens | `src/google/redirect-uri.ts` |
+| 3.7 | Redirect URL parser — extracts `code`, `state`, base `redirectUri` from pasted URL | `src/google/parse-redirect.ts` |
+| 3.8 | OAuth state manager — generate/validate-and-consume/find-pending/purge-expired; 10-min TTL, single-use | `src/google/state.ts` |
+| 3.9 | OAuth core — `buildAuthUrl`, `exchangeCode`, `refreshAccessToken`, `fetchUserEmail`; uses plain `fetch`, no googleapis SDK for auth | `src/google/oauth.ts` |
+| 3.10 | Token store — persist tokens; refresh on demand (5-min buffer); reads client creds from `GoogleClientStore` | `src/google/token-store.ts` |
+| 3.11 | Token redaction — extend `redact.ts` to strip `ya29.`, `1//`, `4/`, bearer headers, sensitive query params | `src/security/redact.ts` |
+| 3.12 | `/google-setup` Telegram command — accept attached `client_secret.json`, parse, store | `src/telegram/commands/google.ts` |
+| 3.13 | `/google-connect <email>` Telegram command — accept user's Google email, generate state+URI, build auth URL with `login_hint`, send instructions | `src/telegram/commands/google.ts` |
+| 3.14 | `/google-complete` Telegram command — parse pasted URL, validate state, exchange code, store tokens | `src/telegram/commands/google.ts` |
+| 3.15 | `/google-status` and `/google-disconnect` commands | `src/telegram/commands/google.ts` |
+| 3.16 | Gmail normalizer — `CompactEmail` / `CompactEmailDetail`; prefers `text/plain`; caps snippet (300) and excerpt (2000) | `src/google/normalize-gmail.ts` |
+| 3.17 | Gmail client — `listRecent` and `getMessage` using `Authorization: Bearer` header | `src/google/gmail.ts` |
+| 3.18 | Calendar normalizer and client — `normalizeCalendarEvent`; `CalendarClient.listWindow` merges multiple calendars | `src/google/normalize-calendar.ts`, `src/google/calendar.ts` |
+| 3.19 | Agent tools — `gmail_list_recent`, `gmail_get_message`, `calendar_list_today`, `calendar_list_tomorrow` | `src/tools/gmail-*.ts`, `src/tools/calendar-*.ts` |
+| 3.20 | Tool registry — rebuild per agent turn; register Google tools only when `tokenStore.hasCredential()` | `src/agent/tool-registry.ts` |
+| 3.21 | Bootstrap wiring — instantiate `GoogleClientStore`, `OAuthStateManager`, `GoogleOAuth`, `GoogleTokenStore`, `GmailClient`, `CalendarClient`; register Telegram commands; pass `buildTools` factory to agent runtime | `src/app/bootstrap.ts` |
 
-**Exit criteria:** `/google-connect` in Telegram → URL sent → browser completes flow → Telegram confirms → `gmail_list_recent` returns compact emails.
+**Exit criteria:** `/google-setup` (with Desktop `client_secret.json` attached) → `/google-connect user@gmail.com` (instructions + auth URL sent with `login_hint`) → browser consent → `/google-complete <url>` → "Connected as user@gmail.com" → `gmail_list_recent` available in the next agent turn without a service restart.
 
 ---
 
@@ -160,7 +171,7 @@ Implementation is complete when all of the following are true:
 3. The assistant can list available Ollama models and switch between them via Telegram.
 4. The assistant can read and modify files in a configured workspace.
 5. The assistant can execute bounded shell commands and return results.
-6. The user can complete Google account authorization from another device on the local network.
+6. The user can complete Google account authorization from any device with a browser.
 7. The assistant can read recent Gmail messages.
 8. The assistant can read upcoming Google Calendar events.
 9. The assistant can run at least one recurring daily briefing job and deliver the result to Telegram.

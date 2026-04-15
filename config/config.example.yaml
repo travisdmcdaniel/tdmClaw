@@ -67,10 +67,6 @@ tools:
 
 google:
   enabled: false
-  clientId: env:TDMCLAW_GOOGLE_CLIENT_ID
-  clientSecret: env:TDMCLAW_GOOGLE_CLIENT_SECRET
-  # Base URL where Google redirects after OAuth — must be HTTPS and LAN-reachable
-  redirectBaseUrl: https://pi-auth.example.com
   scopes:
     gmailRead: true
     calendarRead: true
@@ -82,9 +78,3 @@ scheduler:
   pollIntervalSeconds: 20
   # Jobs missed within this window after a restart will be caught up
   catchUpWindowMinutes: 10
-
-auth:
-  # Host and port the local HTTP server listens on
-  callbackHost: 127.0.0.1
-  callbackPort: 3000
-  secureCookies: true
