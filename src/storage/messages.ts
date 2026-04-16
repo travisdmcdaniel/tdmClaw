@@ -8,19 +8,14 @@ type MessageRow = {
   content: string;
   tool_name: string | null;
   tool_call_id: string | null;
+  tool_calls_json: string | null;
   created_at: string;
 };
 
-export function saveMessage(
-  db: Database,
-  msg: Omit<StoredMessage, "toolName" | "toolCallId"> & {
-    toolName?: string;
-    toolCallId?: string;
-  }
-): void {
+export function saveMessage(db: Database, msg: StoredMessage): void {
   db.prepare(
-    `INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO messages (id, session_id, role, content, tool_name, tool_call_id, tool_calls_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     msg.id,
     msg.sessionId,
@@ -28,6 +23,7 @@ export function saveMessage(
     msg.content,
     msg.toolName ?? null,
     msg.toolCallId ?? null,
+    msg.toolCallsJson ?? null,
     msg.createdAt
   );
 }
@@ -58,6 +54,7 @@ function rowToRecord(row: MessageRow): StoredMessage {
     content: row.content,
     toolName: row.tool_name ?? undefined,
     toolCallId: row.tool_call_id ?? undefined,
+    toolCallsJson: row.tool_calls_json ?? undefined,
     createdAt: row.created_at,
   };
 }

@@ -5,11 +5,12 @@ import type { ModelDiscovery } from "../agent/providers/discovery";
 import type { Database } from "better-sqlite3";
 import { childLogger } from "../app/logger";
 import { buildMessageHandler } from "./handler";
-import { truncateForTelegram } from "./format";
+import { truncateForTelegram, toMarkdownV2 } from "./format";
+import type { TelegramSendOptions } from "./types";
 
 export type TelegramBot = {
   bot: Bot;
-  sendMessage(chatId: string, text: string): Promise<void>;
+  sendMessage(chatId: string, text: string, options?: TelegramSendOptions): Promise<void>;
   stop(): Promise<void>;
 };
 
@@ -37,9 +38,21 @@ export function createTelegramBot(
   return {
     bot,
 
-    async sendMessage(chatId: string, text: string): Promise<void> {
+    async sendMessage(chatId: string, text: string, options?: TelegramSendOptions): Promise<void> {
       try {
-        await bot.api.sendMessage(chatId, truncateForTelegram(text));
+        const parseMode = options?.parseMode ?? "MarkdownV2";
+        const finalText =
+          parseMode === "MarkdownV2"
+            ? truncateForTelegram(toMarkdownV2(text))
+            : truncateForTelegram(text);
+        const replyParameters =
+          options?.replyToMessageId !== undefined
+            ? { reply_parameters: { message_id: options.replyToMessageId } }
+            : {};
+        await bot.api.sendMessage(chatId, finalText, {
+          parse_mode: parseMode,
+          ...replyParameters,
+        });
       } catch (err) {
         log.error({ chatId, err }, "Failed to send Telegram message");
       }

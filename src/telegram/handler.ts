@@ -6,7 +6,7 @@ import type { Database } from "better-sqlite3";
 import { childLogger } from "../app/logger";
 import { isSenderAllowed } from "./guards";
 import { isCommand, parseCommand } from "./routing";
-import { formatError } from "./format";
+import { formatError, toMarkdownV2 } from "./format";
 
 const log = childLogger("telegram");
 
@@ -49,9 +49,12 @@ export function buildMessageHandler(
         userMessage: text,
         sender: { telegramUserId: userId, chatId, username: ctx.from?.username },
       });
-      await ctx.reply(response.text, {
-        reply_parameters: { message_id: ctx.message?.message_id ?? 0 },
-      });
+      const outText = toMarkdownV2(response.text).trim();
+      if (outText) {
+        await ctx.reply(outText, { parse_mode: "MarkdownV2" });
+      } else {
+        log.warn({ userId, chatId }, "Agent returned empty response, skipping send");
+      }
     } catch (err) {
       log.error({ err, userId, chatId }, "Agent turn failed");
       await ctx.reply(formatError(err));

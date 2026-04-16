@@ -27,6 +27,17 @@ export function buildHistoryMessages(
         toolName: m.toolName ?? "",
       };
     }
+    if (m.role === "assistant" && m.toolCallsJson) {
+      let toolCalls: import("./providers/types").ToolCallRequest[] = [];
+      try {
+        toolCalls = JSON.parse(m.toolCallsJson) as import("./providers/types").ToolCallRequest[];
+      } catch {
+        // malformed stored JSON — fall through to plain assistant message
+      }
+      if (toolCalls.length > 0) {
+        return { role: "assistant", content: m.content, toolCalls };
+      }
+    }
     if (m.role === "assistant") {
       return { role: "assistant", content: m.content };
     }

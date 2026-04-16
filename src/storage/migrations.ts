@@ -88,6 +88,12 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      ALTER TABLE messages ADD COLUMN tool_calls_json TEXT;
+    `,
+  },
 ];
 
 /**

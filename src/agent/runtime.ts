@@ -95,9 +95,23 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
         toolCtx,
       });
 
+      // Persist intermediate messages (assistant tool calls + tool results)
+      for (const msg of loopOutput.intermediateMessages) {
+        saveMessage(db, {
+          id: randomUUID(),
+          sessionId,
+          role: msg.role,
+          content: msg.content,
+          toolName: msg.toolName,
+          toolCallId: msg.toolCallId,
+          toolCallsJson: msg.toolCallsJson,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
       const responseText = formatAgentResponse(loopOutput.text);
 
-      // Persist assistant response
+      // Persist final assistant response
       saveMessage(db, {
         id: randomUUID(),
         sessionId,

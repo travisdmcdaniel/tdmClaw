@@ -21,6 +21,8 @@ export type StoredMessage = {
   content: string;
   toolName?: string;
   toolCallId?: string;
+  /** JSON-serialised ToolCallRequest[] stored on assistant messages that make tool calls. */
+  toolCallsJson?: string;
   createdAt: string;
 };
 

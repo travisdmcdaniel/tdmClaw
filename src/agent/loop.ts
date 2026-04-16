@@ -18,10 +18,21 @@ export type LoopInput = {
   toolCtx: ToolContext;
 };
 
+/** A single message generated during the loop (tool-call assistant turn or tool result). */
+export type LoopMessage = {
+  role: "assistant" | "tool";
+  content: string;
+  toolName?: string;
+  toolCallId?: string;
+  toolCallsJson?: string;
+};
+
 export type LoopOutput = {
   text: string;
   toolCallCount: number;
   hitIterationLimit: boolean;
+  /** Intermediate messages produced during the loop (assistant tool calls + tool results). */
+  intermediateMessages: LoopMessage[];
 };
 
 /**
@@ -36,6 +47,7 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
   ];
 
   let toolCallCount = 0;
+  const intermediateMessages: LoopMessage[] = [];
 
   for (let iteration = 0; iteration < input.maxIterations; iteration++) {
     const generateInput: ModelGenerateInput = {
@@ -57,6 +69,7 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
         text: output.text,
         toolCallCount,
         hitIterationLimit: false,
+        intermediateMessages,
       };
     }
 
@@ -71,6 +84,11 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
       role: "assistant",
       content: "",
       toolCalls: [{ id, toolName, argumentsJson }],
+    });
+    intermediateMessages.push({
+      role: "assistant",
+      content: "",
+      toolCallsJson: JSON.stringify([{ id, toolName, argumentsJson }]),
     });
 
     // Execute tool
@@ -98,6 +116,12 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
       toolCallId: id,
       toolName,
     });
+    intermediateMessages.push({
+      role: "tool",
+      content: toolResultContent,
+      toolCallId: id,
+      toolName,
+    });
   }
 
   // Hit iteration limit
@@ -106,5 +130,6 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
     text: "I reached the tool-call limit for this turn. Please try a more focused request.",
     toolCallCount,
     hitIterationLimit: true,
+    intermediateMessages,
   };
 }
