@@ -51,30 +51,38 @@ npm run dev
 
 Sensitive values can also be provided as environment variables instead of in the config file — see `.env.example`.
 
-### 2. Connect your Google account (optional, coming in a future release)
+### 2. Connect your Google account (optional)
 
-Google OAuth support is planned. Once available, you will upload your `client_secret.json` via Telegram and authorize your account entirely through Telegram — no browser on the Pi required. The flow uses a loopback manual redirect: the bot sends you an authorization URL, you open it on any device, and paste the resulting URL back. No HTTP callback server is needed.
+Google OAuth uses a loopback manual flow — no HTTP callback server, no HTTPS certificate, no reverse proxy required. The entire authorization happens through Telegram.
+
+**One-time setup:**
+
+1. In [Google Cloud Console](https://console.cloud.google.com), create an OAuth 2.0 Client ID of type **Desktop app** and download the `client_secret.json` file.
+2. Enable the **Gmail API** and **Google Calendar API** for your project.
+3. In Telegram, send `/google-setup` with the `client_secret.json` file attached.
+4. Send `/google-connect your@gmail.com` — the bot replies with a Google authorization URL.
+5. Open that URL in any browser on any device and approve the consent screen. Your browser will then show a "connection refused" error page at `127.0.0.1` — this is expected.
+6. Copy the full URL from your browser's address bar and send it back with `/google-complete <paste URL>`.
+7. The bot confirms authorization and Gmail/Calendar tools become available immediately.
+
+Enable calendar write access (to create events) by setting `google.scopes.calendarWrite: true` in `config.yaml`.
 
 ## Telegram Commands
 
 | Command | Description |
 |---------|-------------|
+| `/new` | Start a fresh session (clears conversation context) |
 | `/models` | List all models available on the Ollama endpoint |
 | `/model` | Show the currently active model and fallback chain |
 | `/setmodel <name>` | Switch to a specific model |
 | `/setfallback <name> [name...]` | Set the ordered fallback model list |
-
-The following commands are planned for upcoming releases:
-
-| Command | Description |
-|---------|-------------|
-| `/google-setup` | Upload your `client_secret.json` to configure Google OAuth credentials |
-| `/google-connect <email>` | Start Google OAuth authorization flow for the given email address |
-| `/google-complete <url>` | Complete OAuth by pasting the failed redirect URL from your browser |
-| `/google-status` | Show current Google authorization state |
+| `/google-setup` | Upload `client_secret.json` to configure Google OAuth credentials |
+| `/google-connect <email>` | Start Google OAuth authorization for the given email address |
+| `/google-complete <url>` | Finish authorization by pasting the failed redirect URL from your browser |
+| `/google-status` | Show current Google connection state |
 | `/google-disconnect` | Remove stored Google credentials |
-| `/jobs` | List scheduled jobs and their status |
-| `/briefing` | Run the daily briefing immediately |
+| `/jobs` | List scheduled jobs and their status *(Phase 4)* |
+| `/briefing` | Run the daily briefing immediately *(Phase 4)* |
 
 ## Project Structure
 

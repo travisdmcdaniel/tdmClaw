@@ -12,8 +12,7 @@ import { createApplyPatchTool } from "../tools/apply-patch";
 import { createExecTool } from "../tools/exec";
 import { createGmailListRecentTool } from "../tools/gmail-list-recent";
 import { createGmailGetMessageTool } from "../tools/gmail-get-message";
-import { createCalendarListTodayTool } from "../tools/calendar-list-today";
-import { createCalendarListTomorrowTool } from "../tools/calendar-list-tomorrow";
+import { createCalendarListEventsTool } from "../tools/calendar-list-events";
 import { createCalendarCreateEventTool } from "../tools/calendar-create-event";
 
 export type ToolContext = {
@@ -49,9 +48,9 @@ export type GoogleToolDeps = {
  * Creates the tool registry. Tools are registered based on what is enabled
  * in config and what backing subsystems are available.
  *
- * Google tools are registered dynamically per call to getDefinitions() so
- * that authorization completed via /google-connect takes effect on the very
- * next agent turn without a service restart.
+ * Google tools are evaluated dynamically in getDefinitions() so that
+ * authorization completed via /google-connect takes effect on the very next
+ * agent turn without a service restart.
  */
 export function createToolRegistry(
   config: AppConfig,
@@ -77,19 +76,15 @@ export function createToolRegistry(
     register(createExecTool(config.tools.exec));
   }
 
-  // Build the Google tools map once (handlers are stateless wrt credentials)
+  // Build Google tool handlers once (they're stateless w.r.t. credentials)
   const googleTools = buildGoogleTools(config, googleDeps);
 
   return {
     getDefinitions(): ToolDefinition[] {
       const defs = Array.from(staticTools.values()).map((h) => h.definition);
 
-      // Include Google tools only when credentials exist
-      if (
-        googleDeps &&
-        config.google.enabled &&
-        googleDeps.tokenStore.hasCredential()
-      ) {
+      // Include Google tools only when credentials are present
+      if (googleDeps && config.google.enabled && googleDeps.tokenStore.hasCredential()) {
         for (const handler of googleTools.values()) {
           defs.push(handler.definition);
         }
@@ -128,6 +123,7 @@ function buildGoogleTools(
 
   const { gmail, calendar } = deps;
   const { gmailRead, calendarRead, calendarWrite } = config.google.scopes;
+  const timezone = config.app.timezone;
 
   if (gmailRead) {
     const listRecent = createGmailListRecentTool(gmail);
@@ -137,14 +133,12 @@ function buildGoogleTools(
   }
 
   if (calendarRead) {
-    const today = createCalendarListTodayTool(calendar);
-    const tomorrow = createCalendarListTomorrowTool(calendar);
-    tools.set(today.definition.name, today);
-    tools.set(tomorrow.definition.name, tomorrow);
+    const listEvents = createCalendarListEventsTool(calendar, timezone);
+    tools.set(listEvents.definition.name, listEvents);
   }
 
   if (calendarWrite) {
-    const createEvent = createCalendarCreateEventTool(calendar);
+    const createEvent = createCalendarCreateEventTool(calendar, timezone);
     tools.set(createEvent.definition.name, createEvent);
   }
 

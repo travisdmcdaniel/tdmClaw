@@ -11,36 +11,46 @@ type CalendarCreateEventArgs = {
   timeZone?: string;
 };
 
-export function createCalendarCreateEventTool(calendar: CalendarClient): ToolHandler {
+/**
+ * Creates a Google Calendar event.
+ *
+ * @param defaultTimezone - The app's configured timezone (config.app.timezone),
+ *   used when the caller does not supply an explicit timeZone argument.
+ */
+export function createCalendarCreateEventTool(
+  calendar: CalendarClient,
+  defaultTimezone: string
+): ToolHandler {
   return {
     definition: {
       name: "calendar_create_event",
       description:
-        "Create a new event on Google Calendar. " +
-        "startIso and endIso must be ISO 8601 datetime strings (e.g. 2025-06-01T14:00:00). " +
-        "Provide timeZone (e.g. America/Chicago) when the user's local time is known.",
+        "Create a new Google Calendar event. " +
+        "startIso and endIso are local datetime strings in ISO 8601 format " +
+        `(e.g. 2025-06-01T14:00:00). Times are interpreted in ${defaultTimezone} ` +
+        "unless timeZone is explicitly supplied.",
       parameters: {
         type: "object",
         properties: {
           title: {
             type: "string",
-            description: "Event title / summary.",
+            description: "Event title.",
           },
           startIso: {
             type: "string",
-            description: "Start datetime in ISO 8601 format.",
+            description: "Start time as ISO 8601 datetime (e.g. 2025-06-01T14:00:00).",
           },
           endIso: {
             type: "string",
-            description: "End datetime in ISO 8601 format.",
+            description: "End time as ISO 8601 datetime (e.g. 2025-06-01T15:00:00).",
           },
           calendarId: {
             type: "string",
-            description: "Calendar ID to add the event to. Defaults to primary.",
+            description: "Calendar to add the event to. Omit to use the primary calendar.",
           },
           description: {
             type: "string",
-            description: "Optional event description.",
+            description: "Optional event description / notes.",
           },
           location: {
             type: "string",
@@ -48,7 +58,8 @@ export function createCalendarCreateEventTool(calendar: CalendarClient): ToolHan
           },
           timeZone: {
             type: "string",
-            description: "IANA timezone name (e.g. America/Chicago). Recommended.",
+            description:
+              `IANA timezone name (e.g. America/Chicago). Defaults to ${defaultTimezone}.`,
           },
         },
         required: ["title", "startIso", "endIso"],
@@ -56,8 +67,15 @@ export function createCalendarCreateEventTool(calendar: CalendarClient): ToolHan
     },
 
     async execute(args: unknown): Promise<unknown> {
-      const { title, startIso, endIso, calendarId, description, location, timeZone } =
-        args as CalendarCreateEventArgs;
+      const {
+        title,
+        startIso,
+        endIso,
+        calendarId,
+        description,
+        location,
+        timeZone,
+      } = args as CalendarCreateEventArgs;
 
       const created = await calendar.createEvent({
         title,
@@ -66,10 +84,16 @@ export function createCalendarCreateEventTool(calendar: CalendarClient): ToolHan
         calendarId,
         description,
         location,
-        timeZone,
+        timeZone: timeZone ?? defaultTimezone,
       });
 
-      return `Event created: "${created.title}" from ${created.start} to ${created.end} (id: ${created.id})`;
+      return (
+        `Event created: "${created.title}"\n` +
+        `Start: ${created.start}\n` +
+        `End:   ${created.end}\n` +
+        `Calendar: ${created.calendarId}\n` +
+        `ID: ${created.id}`
+      );
     },
   };
 }
