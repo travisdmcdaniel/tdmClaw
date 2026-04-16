@@ -62,19 +62,19 @@ export async function routeGoogleCommand(
   if (!isOwner(ctx)) return; // silently ignore non-owners
 
   switch (command) {
-    case "google-setup":
+    case "google_setup":
       await handleGoogleSetup(ctx, deps);
       break;
-    case "google-connect":
+    case "google_connect":
       await handleGoogleConnect(ctx, args.trim(), deps);
       break;
-    case "google-complete":
+    case "google_complete":
       await handleGoogleComplete(ctx, args.trim(), deps);
       break;
-    case "google-status":
+    case "google_status":
       await handleGoogleStatus(ctx, deps);
       break;
-    case "google-disconnect":
+    case "google_disconnect":
       await handleGoogleDisconnect(ctx, deps);
       break;
     default:

@@ -17,6 +17,7 @@ import { GoogleOAuth } from "../google/oauth";
 import { GoogleTokenStore } from "../google/token-store";
 import { createGmailClient } from "../google/gmail";
 import { createCalendarClient } from "../google/calendar";
+import type { Bot } from "grammy";
 
 /**
  * Main application bootstrap sequence.
@@ -104,7 +105,10 @@ export async function bootstrap(): Promise<void> {
     googleCommandDeps
   );
 
-  // 9. Scheduler
+  // 9. Register commands with Telegram (populates the "/" menu in the app)
+  await registerBotCommands(bot.bot);
+
+  // 10. Scheduler
   if (config.scheduler.enabled) {
     const scheduler = createSchedulerService({
       config,
@@ -116,7 +120,7 @@ export async function bootstrap(): Promise<void> {
     onShutdown("scheduler", () => scheduler.stop());
   }
 
-  // 10. Telegram polling (last — starts accepting messages)
+  // 11. Telegram polling (last — starts accepting messages)
   if (config.telegram.polling.enabled) {
     await startPolling(bot);
     onShutdown("telegram", () => bot.stop());
@@ -138,6 +142,38 @@ export async function bootstrap(): Promise<void> {
 async function ensureDir(dir: string): Promise<void> {
   const { mkdir } = await import("fs/promises");
   await mkdir(dir, { recursive: true });
+}
+
+/**
+ * Registers the bot's command list with Telegram so the "/" menu in the
+ * Telegram app is populated with descriptions. Called once on startup.
+ * Non-fatal — a failure here does not prevent the bot from running.
+ *
+ * Note: Telegram requires command names to match [a-z0-9_]{1,32} (no hyphens).
+ * parseCommand() normalises hyphens to underscores so both forms work when typed.
+ */
+async function registerBotCommands(bot: Bot): Promise<void> {
+  const log = childLogger("app");
+  try {
+    await bot.api.setMyCommands([
+      { command: "new",                description: "Start a fresh session (clears conversation context)" },
+      { command: "help",               description: "Show available commands" },
+      { command: "models",             description: "List all models available on the Ollama endpoint" },
+      { command: "model",              description: "Show the active model and fallback chain" },
+      { command: "setmodel",           description: "Switch to a specific model" },
+      { command: "setfallback",        description: "Set the ordered fallback model list" },
+      { command: "google_setup",       description: "Upload client_secret.json to configure Google OAuth" },
+      { command: "google_connect",     description: "Authorize a Google account (provide your email)" },
+      { command: "google_complete",    description: "Finish authorization by pasting the redirect URL" },
+      { command: "google_status",      description: "Show current Google connection status" },
+      { command: "google_disconnect",  description: "Remove stored Google credentials" },
+      { command: "jobs",               description: "List scheduled jobs and their status" },
+      { command: "briefing",           description: "Run the daily briefing immediately" },
+    ]);
+    log.info("Bot commands registered with Telegram");
+  } catch (err) {
+    log.warn({ err }, "Failed to register bot commands with Telegram (non-fatal)");
+  }
 }
 
 /**

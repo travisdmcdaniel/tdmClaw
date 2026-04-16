@@ -98,11 +98,11 @@ export function buildMessageHandler(
 // ---------------------------------------------------------------------------
 
 const GOOGLE_COMMANDS = new Set([
-  "google-setup",
-  "google-connect",
-  "google-complete",
-  "google-status",
-  "google-disconnect",
+  "google_setup",
+  "google_connect",
+  "google_complete",
+  "google_status",
+  "google_disconnect",
 ]);
 
 async function handleCommand(
@@ -157,11 +157,11 @@ async function handleCommand(
           "/model — show active model\n" +
           "/setmodel <name> — switch model\n" +
           "/setfallback <name...> — set fallback chain\n" +
-          "/google-setup — upload Google OAuth client credentials\n" +
-          "/google-connect <email> — connect Google account\n" +
-          "/google-complete <url> — finish Google authorization\n" +
-          "/google-status — show Google connection status\n" +
-          "/google-disconnect — disconnect Google account\n" +
+          "/google_setup — upload Google OAuth client credentials\n" +
+          "/google_connect <email> — connect Google account\n" +
+          "/google_complete <url> — finish Google authorization\n" +
+          "/google_status — show Google connection status\n" +
+          "/google_disconnect — disconnect Google account\n" +
           "/jobs — manage scheduled jobs\n" +
           "/briefing — run daily briefing now"
       );

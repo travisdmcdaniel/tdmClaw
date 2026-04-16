@@ -59,10 +59,10 @@ Google OAuth uses a loopback manual flow — no HTTP callback server, no HTTPS c
 
 1. In [Google Cloud Console](https://console.cloud.google.com), create an OAuth 2.0 Client ID of type **Desktop app** and download the `client_secret.json` file.
 2. Enable the **Gmail API** and **Google Calendar API** for your project.
-3. In Telegram, send `/google-setup` with the `client_secret.json` file attached.
-4. Send `/google-connect your@gmail.com` — the bot replies with a Google authorization URL.
+3. In Telegram, send `/google_setup` with the `client_secret.json` file attached.
+4. Send `/google_connect your@gmail.com` — the bot replies with a Google authorization URL.
 5. Open that URL in any browser on any device and approve the consent screen. Your browser will then show a "connection refused" error page at `127.0.0.1` — this is expected.
-6. Copy the full URL from your browser's address bar and send it back with `/google-complete <paste URL>`.
+6. Copy the full URL from your browser's address bar and send it back with `/google_complete <paste URL>`.
 7. The bot confirms authorization and Gmail/Calendar tools become available immediately.
 
 Enable calendar write access (to create events) by setting `google.scopes.calendarWrite: true` in `config.yaml`.
@@ -76,11 +76,11 @@ Enable calendar write access (to create events) by setting `google.scopes.calend
 | `/model` | Show the currently active model and fallback chain |
 | `/setmodel <name>` | Switch to a specific model |
 | `/setfallback <name> [name...]` | Set the ordered fallback model list |
-| `/google-setup` | Upload `client_secret.json` to configure Google OAuth credentials |
-| `/google-connect <email>` | Start Google OAuth authorization for the given email address |
-| `/google-complete <url>` | Finish authorization by pasting the failed redirect URL from your browser |
-| `/google-status` | Show current Google connection state |
-| `/google-disconnect` | Remove stored Google credentials |
+| `/google_setup` | Upload `client_secret.json` to configure Google OAuth credentials |
+| `/google_connect <email>` | Start Google OAuth authorization for the given email address |
+| `/google_complete <url>` | Finish authorization by pasting the failed redirect URL from your browser |
+| `/google_status` | Show current Google connection state |
+| `/google_disconnect` | Remove stored Google credentials |
 | `/jobs` | List scheduled jobs and their status *(Phase 4)* |
 | `/briefing` | Run the daily briefing immediately *(Phase 4)* |
 
