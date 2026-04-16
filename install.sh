@@ -143,8 +143,10 @@ workspace:
 models:
   provider: openai-compatible
   baseUrl: ${MODEL_BASE_URL}
+  requestTimeoutSeconds: 600
   maxToolIterations: 4
   maxHistoryTurns: 6
+  maxPromptTokensHint: 4000
   discovery:
     enabled: true
     pollIntervalSeconds: 60
@@ -166,16 +168,15 @@ tools:
 
 google:
   enabled: false
+  scopes:
+    gmailRead: true
+    calendarRead: true
+    calendarWrite: false
 
 scheduler:
   enabled: true
   pollIntervalSeconds: 20
   catchUpWindowMinutes: 10
-
-auth:
-  callbackHost: 127.0.0.1
-  callbackPort: 3000
-  secureCookies: true
 YAML
 
   echo "  Written to config/config.yaml"
@@ -192,6 +193,10 @@ fi
 info "Building (tsc)"
 npm run build
 echo "  Build complete → dist/"
+
+info "Linking tdmclaw command"
+npm link
+echo "  'tdmclaw' is now available as a global command."
 
 # ---------------------------------------------------------------------------
 # 5. Optional: systemd deployment
@@ -274,8 +279,6 @@ fi
 echo
 info "Done."
 echo
-echo "  To start:         npm start"
+echo "  To start:         tdmclaw"
 echo "  Development mode: npm run dev"
-echo
-echo "  To connect Google (optional), send /google-connect in Telegram."
 echo

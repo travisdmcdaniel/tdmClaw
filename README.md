@@ -35,11 +35,12 @@ The installer will:
 - Install npm dependencies
 - Copy `config/config.example.yaml` to `config/config.yaml` and prompt for required values (bot token, allowed user IDs, workspace path, Ollama URL)
 - Build the project
+- Link `tdmclaw` as a global command via `npm link`
 
 Then start with:
 
 ```bash
-npm start
+tdmclaw
 ```
 
 For development with hot reload:
@@ -50,23 +51,9 @@ npm run dev
 
 Sensitive values can also be provided as environment variables instead of in the config file — see `.env.example`.
 
-### 2. Connect your Google account (optional)
+### 2. Connect your Google account (optional, coming in a future release)
 
-First, upload your Google OAuth credentials. In Telegram, send `/google-setup` with your `client_secret.json` attached as a document. (Get this from Google Cloud Console → APIs & Services → Credentials → your Desktop OAuth Client ID → Download JSON.)
-
-Then authorize your account:
-
-```
-/google-connect your@gmail.com
-```
-
-The assistant will send you an authorization URL. Open it in any browser on any device, approve the consent screen, then copy the URL from your browser's address bar (the page will fail to load — this is expected) and send it back with:
-
-```
-/google-complete <paste the URL here>
-```
-
-The assistant will confirm the connection in Telegram.
+Google OAuth support is planned. Once available, you will upload your `client_secret.json` via Telegram and authorize your account entirely through Telegram — no browser on the Pi required. The flow uses a loopback manual redirect: the bot sends you an authorization URL, you open it on any device, and paste the resulting URL back. No HTTP callback server is needed.
 
 ## Telegram Commands
 
@@ -76,6 +63,11 @@ The assistant will confirm the connection in Telegram.
 | `/model` | Show the currently active model and fallback chain |
 | `/setmodel <name>` | Switch to a specific model |
 | `/setfallback <name> [name...]` | Set the ordered fallback model list |
+
+The following commands are planned for upcoming releases:
+
+| Command | Description |
+|---------|-------------|
 | `/google-setup` | Upload your `client_secret.json` to configure Google OAuth credentials |
 | `/google-connect <email>` | Start Google OAuth authorization flow for the given email address |
 | `/google-complete <url>` | Complete OAuth by pasting the failed redirect URL from your browser |

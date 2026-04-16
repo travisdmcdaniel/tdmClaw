@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Lightweight self-hosted AI assistant for Raspberry Pi via Telegram",
   "main": "dist/index.js",
+  "bin": {
+    "tdmclaw": "dist/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",

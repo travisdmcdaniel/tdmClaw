@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { bootstrap } from "./app/bootstrap";
 
 bootstrap().catch((err: unknown) => {

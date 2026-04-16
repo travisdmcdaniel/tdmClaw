@@ -131,6 +131,7 @@
 | 5.7 | Unit tests: path guard, prompt builder, normalizers, scheduler timing | `src/**/*.test.ts` |
 | 5.8 | Integration tests: agent loop with mock provider, OAuth callback | `tests/` |
 | 5.9 | Deployment docs (Caddy/TLS setup, LAN OAuth, initial config) | `docs/` |
+| 5.10 | CLI management tool — `tdmclaw config get/set`, `tdmclaw users add/remove <id>`, `tdmclaw status`; reads/writes `config.yaml` and SQLite directly | `src/cli/index.ts`, `src/cli/commands/` |
 
 ---
 
