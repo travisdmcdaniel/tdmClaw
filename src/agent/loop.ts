@@ -1,6 +1,7 @@
 import type { ModelProvider, ModelGenerateInput, ModelMessage } from "./providers/types";
 import type { ToolDefinition } from "./types";
 import type { ToolRegistry, ToolContext } from "./tool-registry";
+import { formatToolResult } from "../tools/common";
 import { childLogger } from "../app/logger";
 
 const log = childLogger("agent");
@@ -88,7 +89,7 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
 
     const toolResultContent = error
       ? `Error: ${error}`
-      : JSON.stringify(result, null, 2);
+      : formatToolResult(result);
 
     // Append tool result
     messages.push({

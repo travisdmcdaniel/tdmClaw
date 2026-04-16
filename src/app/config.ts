@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
+import { homedir } from "os";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { resolveEnvRef } from "./env";
@@ -117,6 +118,15 @@ export function loadConfig(): AppConfig {
 // ---------------------------------------------------------------------------
 
 /**
+ * Expands a leading ~ to the user's home directory.
+ */
+function expandTilde(val: string): string {
+  if (val === "~") return homedir();
+  if (val.startsWith("~/")) return homedir() + val.slice(1);
+  return val;
+}
+
+/**
  * Recursively walks a plain object tree and resolves "env:VAR" string values.
  */
 function resolveEnvRefs(
@@ -127,7 +137,7 @@ function resolveEnvRefs(
   for (const [key, val] of Object.entries(obj)) {
     const fieldPath = path ? `${path}.${key}` : key;
     if (typeof val === "string") {
-      out[key] = resolveEnvRef(val, fieldPath);
+      out[key] = expandTilde(resolveEnvRef(val, fieldPath));
     } else if (Array.isArray(val)) {
       out[key] = val.map((item, i) =>
         typeof item === "string"

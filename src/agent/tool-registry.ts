@@ -2,6 +2,11 @@ import type { Database } from "better-sqlite3";
 import type { AppConfig } from "../app/config";
 import type { ToolDefinition } from "./types";
 import type { AppLogger } from "../app/logger";
+import { createListFilesTool } from "../tools/list-files";
+import { createReadFileTool } from "../tools/read-file";
+import { createWriteFileTool } from "../tools/write-file";
+import { createApplyPatchTool } from "../tools/apply-patch";
+import { createExecTool } from "../tools/exec";
 
 export type ToolContext = {
   sessionId: string;
@@ -40,19 +45,18 @@ export function createToolRegistry(
   }
 
   // Workspace tools — always registered if workspace is configured
-  // TODO (Phase 2): import and register file tools
-  // register(createListFilesTool(config.workspace));
-  // register(createReadFileTool(config.workspace));
-  // register(createWriteFileTool(config.workspace));
+  register(createListFilesTool(config.workspace.root));
+  register(createReadFileTool(config.workspace.root));
+  register(createWriteFileTool(config.workspace.root));
 
   // Patch tool
   if (config.tools.applyPatch.enabled) {
-    // TODO (Phase 2): register apply_patch tool
+    register(createApplyPatchTool(config.workspace.root));
   }
 
   // Exec tool
   if (config.tools.exec.enabled) {
-    // TODO (Phase 2): register exec tool
+    register(createExecTool(config.tools.exec));
   }
 
   // Google tools — registered only if Google is enabled and credentials exist

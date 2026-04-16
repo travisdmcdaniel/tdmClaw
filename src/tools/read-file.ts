@@ -54,18 +54,19 @@ export function createReadFileTool(workspaceRoot: string): ToolHandler {
       }
 
       const lines = content.split("\n");
-      const total = lines.length;
+      // const total = lines.length;
       const start = Math.max(0, startLine - 1);
       const slice = lines.slice(start, start + maxLines).join("\n");
-      const truncated = truncateOutput(slice, MAX_CHARS);
+      const body = truncateOutput(slice, MAX_CHARS);
 
-      return {
-        path,
-        totalLines: total,
-        startLine: start + 1,
-        returnedLines: Math.min(maxLines, total - start),
-        content: truncated,
-      };
+      // const returned = Math.min(maxLines, total - start);
+      // const header =
+      //   start === 0 && returned >= total
+      //     ? `[${path} — ${total} line${total === 1 ? "" : "s"}]`
+      //     : `[${path} — lines ${start + 1}–${start + returned} of ${total}]`;
+
+      // return `${header}\n${body}`;
+      return body;
     },
   };
 }

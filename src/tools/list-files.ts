@@ -40,11 +40,12 @@ export function createListFilesTool(workspaceRoot: string): ToolHandler {
       const entries: string[] = [];
       collectEntries(resolved, workspaceRoot, depth, 0, entries);
 
-      return {
-        path,
-        entries: entries.slice(0, MAX_ENTRIES),
-        truncated: entries.length > MAX_ENTRIES,
-      };
+      const capped = entries.slice(0, MAX_ENTRIES);
+      const trailer = entries.length > MAX_ENTRIES
+        ? `\n[...truncated — showing ${MAX_ENTRIES} of ${entries.length} entries]`
+        : "";
+
+      return capped.join("\n") + trailer;
     },
   };
 }

@@ -28,8 +28,10 @@ export async function bootstrap(): Promise<void> {
 
   registerShutdownHandlers();
 
-  // 3. Data directory and database
-  await ensureDataDir(config.app.dataDir);
+  // 3. Data directory, workspace root, and database
+  await ensureDir(config.app.dataDir);
+  await ensureDir(config.workspace.root);
+
   const db = openDatabase(config.app.dataDir);
   await runMigrations(db);
   onShutdown("database", () => { db.close(); });
@@ -80,7 +82,7 @@ export async function bootstrap(): Promise<void> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function ensureDataDir(dataDir: string): Promise<void> {
+async function ensureDir(dir: string): Promise<void> {
   const { mkdir } = await import("fs/promises");
-  await mkdir(dataDir, { recursive: true });
+  await mkdir(dir, { recursive: true });
 }

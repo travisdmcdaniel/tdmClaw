@@ -6,11 +6,10 @@ import { resolve, normalize, sep } from "path";
  */
 export function resolveWorkspacePath(inputPath: string, workspaceRoot: string): string {
   const normalized = normalize(inputPath);
-  // If absolute, use as-is (assertWithinWorkspace will reject if out of root)
-  if (normalized.startsWith("/") || /^[A-Za-z]:/.test(normalized)) {
-    return resolve(normalized);
-  }
-  return resolve(workspaceRoot, normalized);
+  // Strip any leading separator so the model can use "/" to mean "workspace root"
+  // without escaping to the real filesystem root.
+  const relative = normalized.replace(/^[/\\]+/, "");
+  return resolve(workspaceRoot, relative);
 }
 
 /**
