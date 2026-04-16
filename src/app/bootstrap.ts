@@ -55,7 +55,13 @@ export async function bootstrap(): Promise<void> {
   });
 
   // 7. Telegram bot
-  const bot = createTelegramBot(config.telegram, agentRuntime, discovery, db);
+  const bot = createTelegramBot(
+    config.telegram,
+    config.workspace.root,
+    agentRuntime,
+    discovery,
+    db
+  );
 
   // 8. Scheduler
   if (config.scheduler.enabled) {

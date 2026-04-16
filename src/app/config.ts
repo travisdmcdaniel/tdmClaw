@@ -32,6 +32,11 @@ const AppConfigSchema = z.object({
       enabled: z.boolean().default(true),
       timeoutSeconds: z.number().int().positive().default(30),
     }),
+    uploads: z.object({
+      retention: z.object({
+        enabled: z.boolean().default(true),
+      }),
+    }),
   }),
   workspace: z.object({
     root: z.string().min(1),

@@ -19,6 +19,7 @@ export type TelegramBot = {
  */
 export function createTelegramBot(
   config: AppConfig["telegram"],
+  workspaceRoot: string,
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
   db: Database
@@ -26,10 +27,10 @@ export function createTelegramBot(
   const log = childLogger("telegram");
   const bot = new Bot(config.botToken);
 
-  const handler = buildMessageHandler(config, agentRuntime, discovery, db);
+  const handler = buildMessageHandler(config, workspaceRoot, agentRuntime, discovery, db);
 
-  // Route all text messages and commands through the unified handler
-  bot.on("message:text", (ctx) => handler(ctx));
+  // Route all messages through the unified handler so document uploads are handled.
+  bot.on("message", (ctx) => handler(ctx));
 
   bot.catch((err) => {
     log.error({ err: err.error }, "Telegram bot error");

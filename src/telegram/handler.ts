@@ -5,10 +5,11 @@ import type { ModelDiscovery } from "../agent/providers/discovery";
 import type { Database } from "better-sqlite3";
 import { childLogger } from "../app/logger";
 import { isSenderAllowed } from "./guards";
-import { isCommand, parseCommand } from "./routing";
+import { parseCommand } from "./routing";
 import { formatError, toMarkdownV2 } from "./format";
 import { createNewSession } from "../agent/session";
 import { deleteMessagesOlderThan } from "../storage/messages";
+import { prepareInboundMessage } from "./inbound";
 
 const log = childLogger("telegram");
 
@@ -19,6 +20,7 @@ type MessageHandler = (ctx: Context) => Promise<void>;
  */
 export function buildMessageHandler(
   config: AppConfig["telegram"],
+  workspaceRoot: string,
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
   db: Database
@@ -26,15 +28,38 @@ export function buildMessageHandler(
   return async (ctx: Context): Promise<void> => {
     const userId = String(ctx.from?.id ?? "");
     const chatId = String(ctx.chat?.id ?? "");
-    const text = ctx.message?.text ?? "";
 
     if (!isSenderAllowed(config, userId, chatId)) {
       log.warn({ userId, chatId }, "Rejected message from unauthorized sender");
       return;
     }
 
-    if (isCommand(text)) {
-      await handleCommand(ctx, text, discovery, db);
+    let inbound;
+    try {
+      inbound = await prepareInboundMessage(ctx, config.botToken, workspaceRoot, config.uploads);
+    } catch (err) {
+      log.error({ err, userId, chatId }, "Failed to prepare inbound Telegram message");
+      await ctx.reply(formatError(err));
+      return;
+    }
+
+    if (inbound.kind === "command") {
+      await handleCommand(ctx, inbound.text, discovery, db);
+      return;
+    }
+
+    if (inbound.kind === "unsupported-document") {
+      await ctx.reply(
+        "I can read attached .txt, .md, and .json files. " +
+          "Send one of those with an optional message."
+      );
+      return;
+    }
+
+    if (inbound.kind === "empty") {
+      await ctx.reply(
+        "Send a text message, or attach a .txt, .md, or .json file with an optional caption."
+      );
       return;
     }
 
@@ -47,7 +72,7 @@ export function buildMessageHandler(
 
     try {
       const response = await agentRuntime.runTurn({
-        userMessage: text,
+        userMessage: inbound.text,
         sender: { telegramUserId: userId, chatId, username: ctx.from?.username },
       });
       const outText = toMarkdownV2(response.text).trim();

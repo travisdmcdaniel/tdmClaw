@@ -18,6 +18,11 @@ telegram:
   polling:
     enabled: true
     timeoutSeconds: 30
+  uploads:
+    retention:
+      # When enabled, old Telegram text uploads in workspace/telegram_uploads
+      # are pruned opportunistically during new uploads.
+      enabled: true
 
 workspace:
   # Absolute path to the workspace root. File tools are restricted to this tree.
@@ -32,11 +37,11 @@ models:
   # API key — leave blank for Ollama
   # apiKey: env:TDMCLAW_MODELS_API_KEY
   # Preferred model name. If omitted or unavailable, the first discovered model is used.
-  # model: qwen2.5-coder-7b-instruct
+  model: qwen3.5:4b
   # Ordered fallback models to try if the active model is unavailable
-  # fallbackModels:
-  #   - llama3.2
-  #   - mistral
+  fallbackModels:
+    - qwen3.5:2b
+    - qwen3.5:0.8b
   requestTimeoutSeconds: 600
   maxToolIterations: 6
   maxHistoryTurns: 6
