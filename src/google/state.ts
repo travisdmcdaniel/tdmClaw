@@ -1,80 +1,133 @@
-import type { Database } from "better-sqlite3";
 import { randomBytes } from "crypto";
+import type { Database } from "better-sqlite3";
 import { childLogger } from "../app/logger";
 
 const log = childLogger("google");
 
-export type OAuthStateRecord = {
-  state: string;
-  provider: "google";
+export const STATE_TTL_MINUTES = 10;
+
+export type ConsumedState = {
   telegramChatId: string;
   telegramUserId: string;
-  createdAt: string;
-  expiresAt: string;
-  consumedAt?: string;
+  redirectUri: string;
+  hintEmail: string | null;
 };
 
-const TTL_MINUTES = 10;
+type StateRow = {
+  telegram_chat_id: string;
+  telegram_user_id: string;
+  redirect_uri: string;
+  hint_email: string | null;
+};
 
 /**
- * Creates and persists a new OAuth state token.
- * The state is a cryptographically random string used to match callbacks to Telegram sessions.
+ * Manages OAuth state tokens for the Google loopback manual flow.
+ *
+ * Each token is 32 random bytes (base64url), stored in oauth_states with a
+ * 10-minute TTL. Tokens are single-use: validateAndConsume() atomically marks
+ * the row consumed and returns it; a second call for the same state returns null.
  */
-export function createOAuthState(
-  db: Database,
-  telegramChatId: string,
-  telegramUserId: string
-): string {
-  const state = randomBytes(32).toString("hex");
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + TTL_MINUTES * 60 * 1000);
+export class OAuthStateManager {
+  constructor(private readonly db: Database) {}
 
-  db.prepare(
-    `INSERT INTO oauth_states (state, provider, telegram_chat_id, telegram_user_id, created_at, expires_at)
-     VALUES (?, 'google', ?, ?, ?, ?)`
-  ).run(state, telegramChatId, telegramUserId, now.toISOString(), expiresAt.toISOString());
+  /**
+   * Generate and persist a new state token for this chat/user/redirectUri.
+   */
+  generate(
+    chatId: string,
+    userId: string,
+    redirectUri: string,
+    hintEmail: string | null = null
+  ): string {
+    const state = randomBytes(32).toString("base64url");
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + STATE_TTL_MINUTES * 60_000);
 
-  return state;
-}
+    this.db
+      .prepare(
+        `INSERT INTO oauth_states
+           (state, provider, telegram_chat_id, telegram_user_id, redirect_uri,
+            hint_email, created_at, expires_at, consumed_at)
+         VALUES (?, 'google', ?, ?, ?, ?, ?, ?, NULL)`
+      )
+      .run(
+        state,
+        chatId,
+        userId,
+        redirectUri,
+        hintEmail,
+        now.toISOString(),
+        expiresAt.toISOString()
+      );
 
-/**
- * Validates and consumes an OAuth state token.
- * Returns the associated Telegram context or null if invalid/expired/already consumed.
- */
-export function consumeOAuthState(
-  db: Database,
-  state: string
-): Pick<OAuthStateRecord, "telegramChatId" | "telegramUserId"> | null {
-  const row = db
-    .prepare(
-      `SELECT telegram_chat_id, telegram_user_id, expires_at, consumed_at
-       FROM oauth_states WHERE state = ?`
-    )
-    .get(state) as
-    | { telegram_chat_id: string; telegram_user_id: string; expires_at: string; consumed_at: string | null }
-    | undefined;
-
-  if (!row) {
-    log.warn({ state: "[redacted]" }, "OAuth state not found");
-    return null;
+    return state;
   }
 
-  if (row.consumed_at) {
-    log.warn("OAuth state already consumed");
-    return null;
+  /**
+   * Atomically validate and consume a state token.
+   * Returns the associated metadata, or null if the token is unknown,
+   * expired, or already consumed.
+   */
+  validateAndConsume(state: string): ConsumedState | null {
+    const now = new Date().toISOString();
+
+    // Atomically mark consumed only if valid
+    const r = this.db
+      .prepare(
+        `UPDATE oauth_states SET consumed_at = ?
+         WHERE state = ? AND expires_at > ? AND consumed_at IS NULL`
+      )
+      .run(now, state, now);
+
+    if (r.changes === 0) {
+      log.warn({ event: "state_invalid" }, "OAuth state not found, expired, or already consumed");
+      return null;
+    }
+
+    const row = this.db
+      .prepare(
+        `SELECT telegram_chat_id, telegram_user_id, redirect_uri, hint_email
+         FROM oauth_states WHERE state = ?`
+      )
+      .get(state) as StateRow | undefined;
+
+    if (!row) return null;
+
+    return {
+      telegramChatId: row.telegram_chat_id,
+      telegramUserId: row.telegram_user_id,
+      redirectUri: row.redirect_uri,
+      hintEmail: row.hint_email,
+    };
   }
 
-  if (new Date(row.expires_at) < new Date()) {
-    log.warn("OAuth state expired");
-    return null;
+  /**
+   * Returns the most-recent unused pending flow for a chat, if any.
+   * Used for the optional auto-detect UX path.
+   */
+  findPendingForChat(chatId: string): { state: string; redirectUri: string } | null {
+    const now = new Date().toISOString();
+    const row = this.db
+      .prepare(
+        `SELECT state, redirect_uri FROM oauth_states
+         WHERE telegram_chat_id = ? AND provider = 'google'
+           AND expires_at > ? AND consumed_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(chatId, now) as { state: string; redirect_uri: string } | undefined;
+
+    if (!row) return null;
+    return { state: row.state, redirectUri: row.redirect_uri };
   }
 
-  db.prepare(
-    `UPDATE oauth_states SET consumed_at = ? WHERE state = ?`
-  ).run(new Date().toISOString(), state);
-
-  return {
-    telegramChatId: row.telegram_chat_id,
-    telegramUserId: row.telegram_user_id,
-  };
+  /**
+   * Purge expired state records older than 1 hour.
+   * Call on startup to clean up any records left by crashed processes.
+   */
+  purgeExpired(): number {
+    const cutoff = new Date(Date.now() - 60 * 60_000).toISOString();
+    return this.db
+      .prepare(`DELETE FROM oauth_states WHERE expires_at < ?`)
+      .run(cutoff).changes;
+  }
 }

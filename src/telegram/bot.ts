@@ -7,6 +7,7 @@ import { childLogger } from "../app/logger";
 import { buildMessageHandler } from "./handler";
 import { truncateForTelegram, toMarkdownV2 } from "./format";
 import type { TelegramSendOptions } from "./types";
+import type { GoogleCommandDeps } from "./commands/google";
 
 export type TelegramBot = {
   bot: Bot;
@@ -22,12 +23,20 @@ export function createTelegramBot(
   workspaceRoot: string,
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
-  db: Database
+  db: Database,
+  googleDeps?: GoogleCommandDeps
 ): TelegramBot {
   const log = childLogger("telegram");
   const bot = new Bot(config.botToken);
 
-  const handler = buildMessageHandler(config, workspaceRoot, agentRuntime, discovery, db);
+  const handler = buildMessageHandler(
+    config,
+    workspaceRoot,
+    agentRuntime,
+    discovery,
+    db,
+    googleDeps
+  );
 
   // Route all messages through the unified handler so document uploads are handled.
   bot.on("message", (ctx) => handler(ctx));

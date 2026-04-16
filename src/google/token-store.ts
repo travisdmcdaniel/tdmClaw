@@ -1,68 +1,105 @@
 import type { Database } from "better-sqlite3";
-import type { GoogleTokenSet } from "./types";
-import { childLogger } from "../app/logger";
+import type { TokenSet } from "./types";
+import type { GoogleOAuth } from "./oauth";
+import type { GoogleClientStore } from "./client-store";
+import type { AppLogger } from "../app/logger";
 
-const log = childLogger("google");
-const PROVIDER = "google";
+const EXPIRY_BUFFER_MS = 5 * 60_000; // refresh if within 5 minutes of expiry
 
 type CredentialsRow = {
-  scopes_json: string;
   token_json: string;
-  updated_at: string;
-};
-
-export type TokenStore = {
-  save(tokens: GoogleTokenSet, scopes: string[]): void;
-  load(): { tokens: GoogleTokenSet; scopes: string[] } | null;
-  clear(): void;
-  hasValidTokens(): boolean;
+  account_label: string | null;
 };
 
 /**
- * Persists and retrieves Google OAuth tokens from the SQLite credentials table.
+ * Persists Google OAuth tokens to the `credentials` table and handles on-demand
+ * refresh. Takes GoogleClientStore as a dep so it can load the current
+ * user-uploaded credentials when refreshing (they are dynamic, not config).
  */
-export function createTokenStore(db: Database): TokenStore {
-  return {
-    save(tokens: GoogleTokenSet, scopes: string[]): void {
-      const now = new Date().toISOString();
-      db.prepare(
-        `INSERT INTO credentials (provider, scopes_json, token_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(provider) DO UPDATE SET
-           scopes_json = excluded.scopes_json,
-           token_json  = excluded.token_json,
-           updated_at  = excluded.updated_at`
-      ).run(PROVIDER, JSON.stringify(scopes), JSON.stringify(tokens), now, now);
-      log.info("Google tokens saved");
-    },
+export class GoogleTokenStore {
+  constructor(
+    private readonly db: Database,
+    private readonly oauth: GoogleOAuth,
+    private readonly clientStore: GoogleClientStore,
+    private readonly logger: AppLogger
+  ) {}
 
-    load(): { tokens: GoogleTokenSet; scopes: string[] } | null {
-      const row = db
-        .prepare(`SELECT scopes_json, token_json FROM credentials WHERE provider = ?`)
-        .get(PROVIDER) as CredentialsRow | undefined;
+  upsert(tokenSet: TokenSet, accountLabel: string | null = null): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO credentials
+           (provider, account_label, scopes_json, token_json, created_at, updated_at)
+         VALUES ('google', ?, ?, ?, ?, ?)
+         ON CONFLICT (provider) DO UPDATE SET
+           account_label = excluded.account_label,
+           scopes_json   = excluded.scopes_json,
+           token_json    = excluded.token_json,
+           updated_at    = excluded.updated_at`
+      )
+      .run(
+        accountLabel,
+        JSON.stringify(tokenSet.scopes),
+        JSON.stringify(tokenSet),
+        now,
+        now
+      );
+  }
 
-      if (!row) return null;
+  hasCredential(): boolean {
+    return (
+      this.db
+        .prepare(`SELECT 1 FROM credentials WHERE provider = 'google' LIMIT 1`)
+        .get() !== undefined
+    );
+  }
 
-      return {
-        tokens: JSON.parse(row.token_json) as GoogleTokenSet,
-        scopes: JSON.parse(row.scopes_json) as string[],
-      };
-    },
+  accountLabel(): string | null {
+    const row = this.db
+      .prepare(`SELECT account_label FROM credentials WHERE provider = 'google'`)
+      .get() as Pick<CredentialsRow, "account_label"> | undefined;
+    return row?.account_label ?? null;
+  }
 
-    clear(): void {
-      db.prepare(`DELETE FROM credentials WHERE provider = ?`).run(PROVIDER);
-      log.info("Google tokens cleared");
-    },
+  delete(): void {
+    this.db.prepare(`DELETE FROM credentials WHERE provider = 'google'`).run();
+  }
 
-    hasValidTokens(): boolean {
-      const stored = this.load();
-      if (!stored) return false;
-      // Consider expired if within 60 seconds of expiry
-      if (stored.tokens.expiryDate) {
-        return stored.tokens.expiryDate > Date.now() + 60_000;
-      }
-      // If no expiry info, assume valid (refresh will handle it)
-      return true;
-    },
-  };
+  /**
+   * Returns a valid access token, refreshing automatically if needed.
+   * Throws if no credentials are stored or if the client credentials are missing
+   * when a refresh is required.
+   */
+  async getAccessToken(): Promise<string> {
+    const stored = this.readStored();
+    if (!stored) {
+      throw new Error("No Google credentials. Run /google-connect to authorize.");
+    }
+
+    // Return the stored token if it isn't near expiry
+    if (Date.now() < stored.expiresAt - EXPIRY_BUFFER_MS) {
+      return stored.accessToken;
+    }
+
+    const creds = this.clientStore.read();
+    if (!creds) {
+      throw new Error(
+        "Google client credentials missing. Re-upload client_secret.json with /google-setup."
+      );
+    }
+
+    this.logger.info({ subsystem: "google", event: "token_refresh_start" }, "Refreshing Google token");
+    const fresh = await this.oauth.refreshAccessToken(creds, stored.refreshToken);
+    this.upsert(fresh, this.accountLabel());
+    this.logger.info({ subsystem: "google", event: "token_refresh_ok" }, "Google token refreshed");
+
+    return fresh.accessToken;
+  }
+
+  private readStored(): TokenSet | null {
+    const row = this.db
+      .prepare(`SELECT token_json FROM credentials WHERE provider = 'google'`)
+      .get() as Pick<CredentialsRow, "token_json"> | undefined;
+    return row ? (JSON.parse(row.token_json) as TokenSet) : null;
+  }
 }

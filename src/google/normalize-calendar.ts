@@ -1,39 +1,44 @@
 import type { CompactCalendarEvent } from "./types";
 
-const MAX_DESCRIPTION_LENGTH = 300;
-
-type CalendarEventResource = {
-  id?: string | null;
-  summary?: string | null;
-  start?: { dateTime?: string | null; date?: string | null } | null;
-  end?: { dateTime?: string | null; date?: string | null } | null;
-  location?: string | null;
-  description?: string | null;
-};
+const DESCRIPTION_MAX = 500;
 
 /**
- * Normalizes a raw Google Calendar event into a compact representation.
+ * Normalizes a raw Google Calendar event item into a compact representation.
+ * Returns null if the input is malformed.
  */
 export function normalizeCalendarEvent(
-  event: CalendarEventResource,
+  raw: unknown,
   calendarId?: string
-): CompactCalendarEvent {
-  const start =
-    event.start?.dateTime ?? event.start?.date ?? "";
-  const end =
-    event.end?.dateTime ?? event.end?.date ?? undefined;
+): CompactCalendarEvent | null {
+  try {
+    const event = raw as {
+      id?: string;
+      summary?: string;
+      start?: { dateTime?: string; date?: string };
+      end?: { dateTime?: string; date?: string };
+      location?: string;
+      description?: string;
+    };
 
-  const descriptionExcerpt = event.description
-    ? event.description.replace(/\s+/g, " ").trim().slice(0, MAX_DESCRIPTION_LENGTH)
-    : undefined;
+    return {
+      id: event.id ?? "",
+      title: event.summary ?? "(No title)",
+      start: event.start?.dateTime ?? event.start?.date ?? "",
+      end: event.end?.dateTime ?? event.end?.date ?? undefined,
+      location: event.location ? String(event.location).slice(0, 200) : undefined,
+      descriptionExcerpt: event.description
+        ? stripHtml(String(event.description)).slice(0, DESCRIPTION_MAX)
+        : undefined,
+      calendarId,
+    };
+  } catch {
+    return null;
+  }
+}
 
-  return {
-    id: event.id ?? "",
-    title: event.summary ?? "(no title)",
-    start,
-    end,
-    location: event.location ?? undefined,
-    descriptionExcerpt,
-    calendarId,
-  };
+function stripHtml(s: string): string {
+  return s
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }

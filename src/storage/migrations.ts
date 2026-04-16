@@ -103,6 +103,26 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE sessions ADD COLUMN total_completion_tokens INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 4,
+    sql: `
+      -- Singleton table for user-uploaded Google OAuth client credentials
+      CREATE TABLE IF NOT EXISTS google_client (
+        id            INTEGER PRIMARY KEY CHECK (id = 1),
+        client_id     TEXT NOT NULL,
+        client_secret TEXT NOT NULL,
+        project_id    TEXT,
+        updated_at    TEXT NOT NULL
+      );
+
+      -- Add redirect_uri and hint_email to oauth_states (manual loopback flow)
+      ALTER TABLE oauth_states ADD COLUMN redirect_uri TEXT NOT NULL DEFAULT '';
+      ALTER TABLE oauth_states ADD COLUMN hint_email   TEXT;
+
+      CREATE INDEX IF NOT EXISTS idx_oauth_states_expires_at ON oauth_states (expires_at);
+      CREATE INDEX IF NOT EXISTS idx_oauth_states_chat       ON oauth_states (telegram_chat_id);
+    `,
+  },
 ];
 
 /**

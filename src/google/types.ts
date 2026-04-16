@@ -1,3 +1,22 @@
+export type GoogleClientCredentials = {
+  clientId: string;
+  clientSecret: string;
+  projectId?: string;
+};
+
+export type TokenSet = {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number; // Unix ms
+  scopes: string[];
+};
+
+export type ParsedRedirect = {
+  code: string;
+  state: string;
+  redirectUri: string; // scheme + host + port + path, no query
+};
+
 export type CompactEmail = {
   id: string;
   threadId: string;
@@ -20,12 +39,4 @@ export type CompactCalendarEvent = {
   location?: string;
   descriptionExcerpt?: string;
   calendarId?: string;
-};
-
-export type GoogleTokenSet = {
-  accessToken: string;
-  refreshToken?: string;
-  expiryDate?: number;
-  scope?: string;
-  tokenType?: string;
 };

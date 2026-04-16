@@ -10,6 +10,8 @@ import { formatError, toMarkdownV2 } from "./format";
 import { createNewSession } from "../agent/session";
 import { deleteMessagesOlderThan } from "../storage/messages";
 import { prepareInboundMessage } from "./inbound";
+import type { GoogleCommandDeps } from "./commands/google";
+import { routeGoogleCommand } from "./commands/google";
 
 const log = childLogger("telegram");
 
@@ -23,7 +25,8 @@ export function buildMessageHandler(
   workspaceRoot: string,
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
-  db: Database
+  db: Database,
+  googleDeps?: GoogleCommandDeps
 ): MessageHandler {
   return async (ctx: Context): Promise<void> => {
     const userId = String(ctx.from?.id ?? "");
@@ -44,7 +47,7 @@ export function buildMessageHandler(
     }
 
     if (inbound.kind === "command") {
-      await handleCommand(ctx, inbound.text, discovery, db);
+      await handleCommand(ctx, inbound.text, discovery, db, googleDeps);
       return;
     }
 
@@ -94,13 +97,32 @@ export function buildMessageHandler(
 // Command router
 // ---------------------------------------------------------------------------
 
+const GOOGLE_COMMANDS = new Set([
+  "google-setup",
+  "google-connect",
+  "google-complete",
+  "google-status",
+  "google-disconnect",
+]);
+
 async function handleCommand(
   ctx: Context,
   text: string,
   discovery: ModelDiscovery,
-  db: Database
+  db: Database,
+  googleDeps?: GoogleCommandDeps
 ): Promise<void> {
   const { command, args } = parseCommand(text);
+
+  // Route Google commands
+  if (GOOGLE_COMMANDS.has(command)) {
+    if (!googleDeps) {
+      await ctx.reply("Google integration is not configured.");
+      return;
+    }
+    await routeGoogleCommand(ctx, command, args.join(" "), googleDeps);
+    return;
+  }
 
   switch (command) {
     case "new":
@@ -117,10 +139,6 @@ async function handleCommand(
       break;
     case "setfallback":
       await handleSetFallback(ctx, discovery, args);
-      break;
-    case "google-connect":
-      // TODO: implement in Phase 3 (Google OAuth)
-      await ctx.reply("Google integration is not yet configured.");
       break;
     case "jobs":
       // TODO: implement in Phase 4 (Scheduler)
@@ -139,7 +157,11 @@ async function handleCommand(
           "/model — show active model\n" +
           "/setmodel <name> — switch model\n" +
           "/setfallback <name...> — set fallback chain\n" +
-          "/google-connect — connect Google account\n" +
+          "/google-setup — upload Google OAuth client credentials\n" +
+          "/google-connect <email> — connect Google account\n" +
+          "/google-complete <url> — finish Google authorization\n" +
+          "/google-status — show Google connection status\n" +
+          "/google-disconnect — disconnect Google account\n" +
           "/jobs — manage scheduled jobs\n" +
           "/briefing — run daily briefing now"
       );

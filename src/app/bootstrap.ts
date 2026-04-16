@@ -11,6 +11,12 @@ import { createToolRegistry } from "../agent/tool-registry";
 import { createModelProvider } from "../agent/providers/openai-compatible";
 import { createModelDiscovery } from "../agent/providers/discovery";
 import { createSchedulerService } from "../scheduler/service";
+import { GoogleClientStore } from "../google/client-store";
+import { OAuthStateManager } from "../google/state";
+import { GoogleOAuth } from "../google/oauth";
+import { GoogleTokenStore } from "../google/token-store";
+import { createGmailClient } from "../google/gmail";
+import { createCalendarClient } from "../google/calendar";
 
 /**
  * Main application bootstrap sequence.
@@ -42,10 +48,44 @@ export async function bootstrap(): Promise<void> {
   await discovery.start();
   onShutdown("model-discovery", () => discovery.stop());
 
-  // 5. Tool registry
-  const toolRegistry = createToolRegistry(config, db);
+  // 5. Google subsystem (optional — only fully active when google.enabled = true)
+  const clientStore = new GoogleClientStore(db);
+  const stateMgr = new OAuthStateManager(db);
+  const oauth = new GoogleOAuth();
+  const tokenStore = new GoogleTokenStore(db, oauth, clientStore, logger);
+  const gmailClient = createGmailClient(tokenStore);
+  const calendarClient = createCalendarClient(tokenStore);
 
-  // 6. Agent runtime
+  // Purge any expired OAuth state records left by prior processes
+  const purged = stateMgr.purgeExpired();
+  if (purged > 0) {
+    log.info({ purged }, "Purged expired OAuth state records");
+  }
+
+  const googleCommandDeps = {
+    clientStore,
+    stateMgr,
+    oauth,
+    tokenStore,
+    scopeConfig: config.google.scopes,
+    isOwner: makeOwnerGuard(config),
+    botToken: config.telegram.botToken,
+    logger,
+  };
+
+  const googleToolDeps = config.google.enabled
+    ? {
+        tokenStore,
+        gmail: gmailClient,
+        calendar: calendarClient,
+        config: config.google,
+      }
+    : undefined;
+
+  // 6. Tool registry
+  const toolRegistry = createToolRegistry(config, db, googleToolDeps);
+
+  // 7. Agent runtime
   const agentRuntime = createAgentRuntime({
     config,
     db,
@@ -54,16 +94,17 @@ export async function bootstrap(): Promise<void> {
     toolRegistry,
   });
 
-  // 7. Telegram bot
+  // 8. Telegram bot
   const bot = createTelegramBot(
     config.telegram,
     config.workspace.root,
     agentRuntime,
     discovery,
-    db
+    db,
+    googleCommandDeps
   );
 
-  // 8. Scheduler
+  // 9. Scheduler
   if (config.scheduler.enabled) {
     const scheduler = createSchedulerService({
       config,
@@ -75,13 +116,19 @@ export async function bootstrap(): Promise<void> {
     onShutdown("scheduler", () => scheduler.stop());
   }
 
-  // 9. Telegram polling (last — starts accepting messages)
+  // 10. Telegram polling (last — starts accepting messages)
   if (config.telegram.polling.enabled) {
     await startPolling(bot);
     onShutdown("telegram", () => bot.stop());
   }
 
-  log.info("tdmClaw is ready");
+  log.info(
+    {
+      googleEnabled: config.google.enabled,
+      googleAuthorized: tokenStore.hasCredential(),
+    },
+    "tdmClaw is ready"
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -91,4 +138,16 @@ export async function bootstrap(): Promise<void> {
 async function ensureDir(dir: string): Promise<void> {
   const { mkdir } = await import("fs/promises");
   await mkdir(dir, { recursive: true });
+}
+
+/**
+ * Returns a guard function that returns true only for the configured allowedUserIds.
+ * Used to restrict Google commands to the owner.
+ */
+function makeOwnerGuard(config: AppConfig): (ctx: { from?: { id?: number } }) => boolean {
+  const allowed = new Set(config.telegram.allowedUserIds);
+  return (ctx) => {
+    const userId = String(ctx.from?.id ?? "");
+    return allowed.has(userId);
+  };
 }

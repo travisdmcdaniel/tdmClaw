@@ -1,93 +1,147 @@
-import { google } from "googleapis";
-import type { TokenStore } from "./token-store";
-import type { GoogleTokenSet } from "./types";
-import { buildScopeList } from "./scopes";
-import { childLogger } from "../app/logger";
+import type { TokenSet, GoogleClientCredentials } from "./types";
 
-const log = childLogger("google");
+const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
+const USERINFO_ENDPOINT = "https://www.googleapis.com/oauth2/v1/userinfo";
 
-export type OAuthManager = {
-  getAuthUrl(state: string): string;
-  exchangeCode(code: string): Promise<GoogleTokenSet>;
-  getAuthenticatedClient(): InstanceType<typeof google.auth.OAuth2> | null;
-  refreshIfNeeded(): Promise<void>;
+export type AuthUrlParams = {
+  clientId: string;
+  redirectUri: string;
+  scopes: string[];
+  state: string;
+  loginHint?: string;
 };
 
-// TODO (Phase 3): Replace with manual loopback flow implementation.
-// Credentials come from the google_client DB table, not config.
-export function createOAuthManager(
-  clientId: string,
-  clientSecret: string,
-  redirectUri: string,
-  scopes: string[],
-  tokenStore: TokenStore
-): OAuthManager {
-  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+type TokenResponse = {
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number;
+  scope: string;
+};
 
-  // buildScopeList is kept as a utility; callers pass scopes directly here.
-  void buildScopeList; // suppress unused-import warning until Phase 3 rewrite
-
-  // If tokens are stored, pre-load them into the client
-  const stored = tokenStore.load();
-  if (stored) {
-    oauth2Client.setCredentials({
-      access_token: stored.tokens.accessToken,
-      refresh_token: stored.tokens.refreshToken,
-      expiry_date: stored.tokens.expiryDate,
-      scope: stored.tokens.scope,
-      token_type: stored.tokens.tokenType,
+/**
+ * Core OAuth 2.0 operations for Google using plain fetch (no googleapis SDK).
+ *
+ * The GoogleOAuth instance is stateless — credentials are passed per-call.
+ * This matches the manual loopback flow where each authorization may use
+ * different ephemeral client credentials and redirect URIs.
+ */
+export class GoogleOAuth {
+  /**
+   * Build the Google authorization URL.
+   *
+   * - access_type=offline  → request a refresh_token
+   * - prompt=consent       → always re-issue refresh_token (prevents silent
+   *                          omission after prior authorization)
+   * - include_granted_scopes=true → accumulate scopes across re-authorizations
+   * - login_hint           → pre-selects the Google account on the consent screen
+   */
+  buildAuthUrl(params: AuthUrlParams): string {
+    const q = new URLSearchParams({
+      response_type: "code",
+      client_id: params.clientId,
+      redirect_uri: params.redirectUri,
+      scope: params.scopes.join(" "),
+      state: params.state,
+      access_type: "offline",
+      prompt: "consent",
+      include_granted_scopes: "true",
     });
+    if (params.loginHint) q.set("login_hint", params.loginHint);
+    return `${AUTH_ENDPOINT}?${q.toString()}`;
   }
 
-  // Auto-save refreshed tokens
-  oauth2Client.on("tokens", (tokens) => {
-    const existing = tokenStore.load();
-    const merged: GoogleTokenSet = {
-      accessToken: tokens.access_token ?? existing?.tokens.accessToken ?? "",
-      refreshToken: tokens.refresh_token ?? existing?.tokens.refreshToken,
-      expiryDate: tokens.expiry_date ?? undefined,
-      scope: tokens.scope ?? existing?.tokens.scope,
-      tokenType: tokens.token_type ?? "Bearer",
+  /**
+   * Exchange an authorization code for a TokenSet.
+   *
+   * IMPORTANT: `redirectUri` must exactly match the one used in buildAuthUrl().
+   * Google validates this and returns redirect_uri_mismatch otherwise.
+   */
+  async exchangeCode(
+    creds: GoogleClientCredentials,
+    code: string,
+    redirectUri: string
+  ): Promise<TokenSet> {
+    const resp = await fetch(TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri,
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Token exchange failed (${resp.status}): ${await resp.text()}`);
+    }
+
+    const data = (await resp.json()) as TokenResponse;
+
+    if (!data.refresh_token) {
+      throw new Error(
+        "Google did not return a refresh_token. " +
+          "Revoke app access at https://myaccount.google.com/permissions and try /google-connect again."
+      );
+    }
+
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token,
+      expiresAt: Date.now() + data.expires_in * 1000,
+      scopes: data.scope.split(" "),
     };
-    tokenStore.save(merged, scopes);
-    log.info("Google tokens refreshed and saved");
-  });
+  }
 
-  return {
-    getAuthUrl(state: string): string {
-      return oauth2Client.generateAuthUrl({
-        access_type: "offline",
-        scope: scopes,
-        state,
-        prompt: "consent",
+  /**
+   * Exchange a refresh token for a new access token.
+   * Preserves the original refresh token if Google does not rotate it.
+   */
+  async refreshAccessToken(
+    creds: GoogleClientCredentials,
+    refreshToken: string
+  ): Promise<TokenSet> {
+    const resp = await fetch(TOKEN_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
+      }),
+    });
+
+    if (!resp.ok) {
+      throw new Error(`Token refresh failed (${resp.status}): ${await resp.text()}`);
+    }
+
+    const data = (await resp.json()) as TokenResponse;
+
+    return {
+      accessToken: data.access_token,
+      refreshToken: data.refresh_token ?? refreshToken,
+      expiresAt: Date.now() + data.expires_in * 1000,
+      scopes: data.scope.split(" "),
+    };
+  }
+
+  /**
+   * Fetch the email address associated with an access token.
+   * Returns null on any error (best-effort — callers fall back to hint email).
+   */
+  async fetchUserEmail(accessToken: string): Promise<string | null> {
+    try {
+      const r = await fetch(USERINFO_ENDPOINT, {
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
-    },
-
-    async exchangeCode(code: string): Promise<GoogleTokenSet> {
-      const { tokens } = await oauth2Client.getToken(code);
-      const tokenSet: GoogleTokenSet = {
-        accessToken: tokens.access_token ?? "",
-        refreshToken: tokens.refresh_token ?? undefined,
-        expiryDate: tokens.expiry_date ?? undefined,
-        scope: tokens.scope ?? undefined,
-        tokenType: tokens.token_type ?? "Bearer",
-      };
-      oauth2Client.setCredentials(tokens);
-      tokenStore.save(tokenSet, scopes);
-      return tokenSet;
-    },
-
-    getAuthenticatedClient() {
-      const stored = tokenStore.load();
-      if (!stored) return null;
-      return oauth2Client as InstanceType<typeof google.auth.OAuth2>;
-    },
-
-    async refreshIfNeeded(): Promise<void> {
-      if (!tokenStore.hasValidTokens()) {
-        log.info("Access token expired, refreshing");
-        await oauth2Client.getAccessToken();
-      }
-    },
-  };
+      if (!r.ok) return null;
+      const d = (await r.json()) as { email?: string };
+      return d.email ?? null;
+    } catch {
+      return null;
+    }
+  }
 }
