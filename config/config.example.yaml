@@ -38,7 +38,7 @@ models:
   #   - llama3.2
   #   - mistral
   requestTimeoutSeconds: 600
-  maxToolIterations: 4
+  maxToolIterations: 6
   maxHistoryTurns: 6
   # Soft token hint for history trimming (informational only in v1)
   maxPromptTokensHint: 4000

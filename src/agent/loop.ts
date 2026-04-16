@@ -25,6 +25,8 @@ export type LoopMessage = {
   toolName?: string;
   toolCallId?: string;
   toolCallsJson?: string;
+  promptTokens?: number;
+  completionTokens?: number;
 };
 
 export type LoopOutput = {
@@ -33,6 +35,12 @@ export type LoopOutput = {
   hitIterationLimit: boolean;
   /** Intermediate messages produced during the loop (assistant tool calls + tool results). */
   intermediateMessages: LoopMessage[];
+  /** Tokens used for the final model call that produced the response text. */
+  finalPromptTokens: number;
+  finalCompletionTokens: number;
+  /** Total tokens across all model calls in this loop. */
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
 };
 
 /**
@@ -47,6 +55,8 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
   ];
 
   let toolCallCount = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
   const intermediateMessages: LoopMessage[] = [];
 
   for (let iteration = 0; iteration < input.maxIterations; iteration++) {
@@ -65,17 +75,29 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
     const output = await input.provider.generate(generateInput);
 
     if (output.kind === "message") {
+      const pt = output.usage?.promptTokens ?? 0;
+      const ct = output.usage?.completionTokens ?? 0;
+      totalPromptTokens += pt;
+      totalCompletionTokens += ct;
       return {
         text: output.text,
         toolCallCount,
         hitIterationLimit: false,
         intermediateMessages,
+        finalPromptTokens: pt,
+        finalCompletionTokens: ct,
+        totalPromptTokens,
+        totalCompletionTokens,
       };
     }
 
     // Tool call
     toolCallCount++;
     const { id, toolName, argumentsJson } = output;
+    const pt = output.usage?.promptTokens ?? 0;
+    const ct = output.usage?.completionTokens ?? 0;
+    totalPromptTokens += pt;
+    totalCompletionTokens += ct;
 
     log.info({ tool: toolName, iteration }, "Executing tool call");
 
@@ -89,6 +111,8 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
       role: "assistant",
       content: "",
       toolCallsJson: JSON.stringify([{ id, toolName, argumentsJson }]),
+      promptTokens: pt || undefined,
+      completionTokens: ct || undefined,
     });
 
     // Execute tool
@@ -131,5 +155,9 @@ export async function runAgentLoop(input: LoopInput): Promise<LoopOutput> {
     toolCallCount,
     hitIterationLimit: true,
     intermediateMessages,
+    finalPromptTokens: 0,
+    finalCompletionTokens: 0,
+    totalPromptTokens,
+    totalCompletionTokens,
   };
 }

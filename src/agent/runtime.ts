@@ -10,6 +10,7 @@ import { loadSessionContext } from "./session";
 import { runAgentLoop } from "./loop";
 import { formatAgentResponse } from "./response";
 import { saveMessage } from "../storage/messages";
+import { addSessionTokens } from "../storage/sessions";
 import { childLogger } from "../app/logger";
 import { randomUUID } from "crypto";
 
@@ -36,18 +37,18 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
 
   return {
     async runTurn(input: AgentTurnInput): Promise<AgentTurnOutput> {
-      const { sessionId, userMessage, sender } = input;
+      const { userMessage, sender } = input;
 
-      log.info({ sessionId, userId: sender.telegramUserId }, "Agent turn start");
-
-      // Load or create session + recent history
+      // Resolve the active session for this chat (creates one if none exists).
       const session = loadSessionContext(
         db,
-        sessionId,
         sender.chatId,
         sender.telegramUserId,
         config.models.maxHistoryTurns
       );
+      const sessionId = session.sessionId;
+
+      log.info({ sessionId, userId: sender.telegramUserId }, "Agent turn start");
 
       // Build prompt and tool list
       const toolDefs = toolRegistry.getDefinitions();
@@ -105,26 +106,42 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
           toolName: msg.toolName,
           toolCallId: msg.toolCallId,
           toolCallsJson: msg.toolCallsJson,
+          promptTokens: msg.promptTokens,
+          completionTokens: msg.completionTokens,
           createdAt: new Date().toISOString(),
         });
       }
 
       const responseText = formatAgentResponse(loopOutput.text);
 
-      // Persist final assistant response
+      // Persist final assistant response with its token counts
       saveMessage(db, {
         id: randomUUID(),
         sessionId,
         role: "assistant",
         content: responseText,
+        promptTokens: loopOutput.finalPromptTokens || undefined,
+        completionTokens: loopOutput.finalCompletionTokens || undefined,
         createdAt: new Date().toISOString(),
       });
+
+      // Update session-level token totals
+      if (loopOutput.totalPromptTokens > 0 || loopOutput.totalCompletionTokens > 0) {
+        addSessionTokens(
+          db,
+          sessionId,
+          loopOutput.totalPromptTokens,
+          loopOutput.totalCompletionTokens
+        );
+      }
 
       log.info(
         {
           sessionId,
           toolCallCount: loopOutput.toolCallCount,
           hitLimit: loopOutput.hitIterationLimit,
+          promptTokens: loopOutput.totalPromptTokens,
+          completionTokens: loopOutput.totalCompletionTokens,
         },
         "Agent turn complete"
       );

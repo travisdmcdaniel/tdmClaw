@@ -94,6 +94,15 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE messages ADD COLUMN tool_calls_json TEXT;
     `,
   },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE messages ADD COLUMN prompt_tokens INTEGER;
+      ALTER TABLE messages ADD COLUMN completion_tokens INTEGER;
+      ALTER TABLE sessions ADD COLUMN total_prompt_tokens INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE sessions ADD COLUMN total_completion_tokens INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 /**

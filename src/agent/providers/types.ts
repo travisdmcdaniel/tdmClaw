@@ -23,11 +23,17 @@ export type ToolCallRequest = {
   argumentsJson: string;
 };
 
+export type ModelUsage = {
+  promptTokens: number;
+  completionTokens: number;
+};
+
 export type ModelGenerateOutput =
-  | { kind: "message"; text: string }
+  | { kind: "message"; text: string; usage?: ModelUsage }
   | {
       kind: "tool_call";
       id: string;
       toolName: string;
       argumentsJson: string;
+      usage?: ModelUsage;
     };

@@ -38,6 +38,11 @@ type OpenAIResponse = {
       }>;
     };
   }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 };
 
 /**
@@ -112,6 +117,9 @@ export function createModelProvider(
       if (!choice) throw new Error("Model returned no choices");
 
       const msg = choice.message;
+      const usage = data.usage
+        ? { promptTokens: data.usage.prompt_tokens, completionTokens: data.usage.completion_tokens }
+        : undefined;
 
       // Tool call takes priority over text content
       const toolCall = msg.tool_calls?.[0];
@@ -121,12 +129,14 @@ export function createModelProvider(
           id: toolCall.id,
           toolName: toolCall.function.name,
           argumentsJson: toolCall.function.arguments,
+          usage,
         };
       }
 
       return {
         kind: "message",
         text: msg.content ?? "",
+        usage,
       };
     },
   };

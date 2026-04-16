@@ -7,6 +7,8 @@ import { childLogger } from "../app/logger";
 import { isSenderAllowed } from "./guards";
 import { isCommand, parseCommand } from "./routing";
 import { formatError, toMarkdownV2 } from "./format";
+import { createNewSession } from "../agent/session";
+import { deleteMessagesOlderThan } from "../storage/messages";
 
 const log = childLogger("telegram");
 
@@ -19,7 +21,7 @@ export function buildMessageHandler(
   config: AppConfig["telegram"],
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
-  _db: Database
+  db: Database
 ): MessageHandler {
   return async (ctx: Context): Promise<void> => {
     const userId = String(ctx.from?.id ?? "");
@@ -32,7 +34,7 @@ export function buildMessageHandler(
     }
 
     if (isCommand(text)) {
-      await handleCommand(ctx, text, discovery);
+      await handleCommand(ctx, text, discovery, db);
       return;
     }
 
@@ -45,7 +47,6 @@ export function buildMessageHandler(
 
     try {
       const response = await agentRuntime.runTurn({
-        sessionId: `telegram:${chatId}`,
         userMessage: text,
         sender: { telegramUserId: userId, chatId, username: ctx.from?.username },
       });
@@ -71,11 +72,15 @@ export function buildMessageHandler(
 async function handleCommand(
   ctx: Context,
   text: string,
-  discovery: ModelDiscovery
+  discovery: ModelDiscovery,
+  db: Database
 ): Promise<void> {
   const { command, args } = parseCommand(text);
 
   switch (command) {
+    case "new":
+      await handleNew(ctx, db);
+      break;
     case "models":
       await handleModels(ctx, discovery);
       break;
@@ -104,6 +109,7 @@ async function handleCommand(
     case "help":
       await ctx.reply(
         "Available commands:\n" +
+          "/new — start a fresh session (clears context)\n" +
           "/models — list available models\n" +
           "/model — show active model\n" +
           "/setmodel <name> — switch model\n" +
@@ -116,6 +122,27 @@ async function handleCommand(
     default:
       await ctx.reply(`Unknown command: /${command}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+async function handleNew(ctx: Context, db: Database): Promise<void> {
+  const chatId = String(ctx.chat?.id ?? "");
+  const userId = String(ctx.from?.id ?? "");
+
+  createNewSession(db, chatId, userId);
+
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const deleted = deleteMessagesOlderThan(db, cutoff);
+
+  const cleanupNote =
+    deleted > 0
+      ? ` Removed ${deleted} message${deleted !== 1 ? "s" : ""} older than 1 week.`
+      : "";
+
+  await ctx.reply(`New session started.${cleanupNote}`);
 }
 
 // ---------------------------------------------------------------------------
