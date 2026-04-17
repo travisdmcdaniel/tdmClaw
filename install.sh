@@ -45,6 +45,14 @@ prompt_yn() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# When running under sudo the $HOME variable points to /root, not the invoking
+# user's home directory. Resolve the real home from SUDO_USER if present.
+if [[ -n "${SUDO_USER:-}" ]]; then
+  REAL_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+  REAL_HOME="$HOME"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Check dependencies
 # ---------------------------------------------------------------------------
@@ -117,8 +125,6 @@ if [[ -f "$CONFIG_FILE" ]]; then
     info "Keeping existing config. Skipping to build."
     SKIP_CONFIG=1
   fi
-else
-  cp "$SCRIPT_DIR/config/config.example.yaml" "$CONFIG_FILE"
 fi
 
 if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then
@@ -130,11 +136,11 @@ if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then
 
   prompt WORKSPACE_ROOT \
     "Workspace root directory" \
-    "$HOME/.tdmclaw/workspace"
+    "$REAL_HOME/.tdmclaw/workspace"
 
   prompt DATA_DIR \
     "Data directory (SQLite database)" \
-    "$HOME/.tdmclaw/data"
+    "$REAL_HOME/.tdmclaw/data"
 
   prompt MODEL_BASE_URL \
     "Ollama base URL" \
@@ -144,72 +150,40 @@ if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then
     "Timezone (IANA, e.g. America/New_York)" \
     "UTC"
 
-  # Build the allowedUserIds YAML list
-  userid_yaml=""
-  for uid in $ALLOWED_USER_IDS; do
-    userid_yaml+=$'\n'"    - \"${uid}\""
-  done
-
+  # Start from the canonical example so every config key is present.
+  # Then patch only the values that were prompted, leaving all other keys
+  # and their defaults intact. This means new keys added to config.example.yaml
+  # automatically appear in generated configs without changing this script.
   info "Writing config/config.yaml"
   mkdir -p "$SCRIPT_DIR/config"
-  cat > "$CONFIG_FILE" <<YAML
-app:
-  dataDir: ${DATA_DIR}
-  logLevel: info
-  timezone: ${TIMEZONE}
+  cp "$SCRIPT_DIR/config/config.example.yaml" "$CONFIG_FILE"
 
-telegram:
-  botToken: "${BOT_TOKEN}"
-  allowedUserIds:${userid_yaml}
-  polling:
-    enabled: true
-    timeoutSeconds: 30
+  # Single-line sed substitutions (values taken verbatim from example).
+  sed -i "s|  dataDir: ./data|  dataDir: ${DATA_DIR}|" "$CONFIG_FILE"
+  sed -i "s|  timezone: America/New_York|  timezone: ${TIMEZONE}|" "$CONFIG_FILE"
+  sed -i "s|  botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN|  botToken: \"${BOT_TOKEN}\"|" "$CONFIG_FILE"
+  sed -i "s|  baseUrl: http://127.0.0.1:11434|  baseUrl: ${MODEL_BASE_URL}|" "$CONFIG_FILE"
+  sed -i "s|  root: /opt/tdmclaw/workspace|  root: ${WORKSPACE_ROOT}|" "$CONFIG_FILE"
 
-workspace:
-  root: ${WORKSPACE_ROOT}
-
-models:
-  provider: openai-compatible
-  baseUrl: ${MODEL_BASE_URL}
-  requestTimeoutSeconds: 600
-  maxToolIterations: 4
-  maxHistoryTurns: 6
-  maxPromptTokensHint: 4000
-  discovery:
-    enabled: true
-    pollIntervalSeconds: 60
-
-tools:
-  exec:
-    enabled: true
-    timeoutSeconds: 30
-    maxOutputChars: 4096
-    approvalMode: owner-only
-    blockedCommands:
-      - "rm -rf /"
-      - mkfs
-    blockedPatterns:
-      - "sudo rm -rf"
-      - "> /dev/"
-  applyPatch:
-    enabled: true
-
-google:
-  enabled: false
-  scopes:
-    gmailRead: true
-    calendarRead: true
-    calendarWrite: false
-
-scheduler:
-  enabled: true
-  pollIntervalSeconds: 20
-  catchUpWindowMinutes: 10
-YAML
+  # allowedUserIds may be multiple values — build replacement lines and splice
+  # them in via sed (no Python3 required).
+  _userid_tmp=$(mktemp)
+  for _uid in $ALLOWED_USER_IDS; do
+    echo "    - \"${_uid}\"" >> "$_userid_tmp"
+  done
+  # Append the generated lines after the placeholder line, then delete placeholder.
+  sed -i "/^    - \"123456789\"$/r $_userid_tmp" "$CONFIG_FILE"
+  sed -i "/^    - \"123456789\"$/d" "$CONFIG_FILE"
+  rm -f "$_userid_tmp"
+  unset _userid_tmp _uid
 
   echo "  Written to config/config.yaml"
   info "Creating workspace and data directories"
   mkdir -p "$WORKSPACE_ROOT" "$DATA_DIR"
+  # If running under sudo, give ownership to the real user.
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    chown -R "$SUDO_USER:$SUDO_USER" "$WORKSPACE_ROOT" "$DATA_DIR"
+  fi
   echo "  ${WORKSPACE_ROOT}"
   echo "  ${DATA_DIR}"
 fi

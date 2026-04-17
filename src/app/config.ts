@@ -41,8 +41,8 @@ const AppConfigSchema = z.object({
     uploads: z.object({
       retention: z.object({
         enabled: z.boolean().default(true),
-      }),
-    }),
+      }).default({}),
+    }).default({}),
   }),
   workspace: z.object({
     root: z.string().min(1),
