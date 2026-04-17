@@ -118,7 +118,7 @@
 
 ## Phase 5 — Hardening + Deployment
 
-**Goal:** Production-ready service on the Pi.
+**Goal:** Production-ready service on the Pi. Completes v1.
 
 | # | Task | Key Files |
 |---|------|-----------|
@@ -132,6 +132,90 @@
 | 5.8 | Integration tests: agent loop with mock provider, OAuth callback | `tests/` |
 | 5.9 | Deployment docs (Caddy/TLS setup, LAN OAuth, initial config) | `docs/` |
 | 5.10 | CLI management tool — `tdmclaw config get/set`, `tdmclaw users add/remove <id>`, `tdmclaw status`; reads/writes `config.yaml` and SQLite directly | `src/cli/index.ts`, `src/cli/commands/` |
+
+---
+
+## Phase C-1 — Context Features: Shared Scaffolding
+
+**Goal:** Add config flags, workspace template assets, and shared seeding/context assembly primitives. Detailed spec: `tdmClaw_ContextFeatures_IP.md`, `tdmClaw_ContextFeatures_TDD.md`.
+
+| # | Task | Key Files |
+|---|------|-----------|
+| C-1.1 | Extend `AppConfig` with `personality`, `skills`, and `memories` sections | `src/app/config.ts`, `config/config.example.yaml` |
+| C-1.2 | Add repo templates for personality and default skills | `templates/personality/*`, `templates/skills/*` |
+| C-1.3 | Create workspace seeding helpers (create dirs, copy-if-missing) | `src/workspace/seeding.ts` |
+| C-1.4 | Update bootstrap to seed personality and skills alongside jobs | `src/app/bootstrap.ts` |
+| C-1.5 | Update `install.sh` to create directories and seed templates before first run | `install.sh` |
+| C-1.6 | Create prompt context assembler contract and types | `src/context/assembler.ts`, `src/context/types.ts` |
+
+**Exit criteria:** A fresh install or first bootstrap produces `<workspace>/personality` and `<workspace>/skills` with default files present; user-edited files are never overwritten.
+
+---
+
+## Phase C-2 — Context Features: Personality
+
+**Goal:** Load operator-editable personality files from the workspace and inject them into the system prompt when enabled.
+
+| # | Task | Key Files |
+|---|------|-----------|
+| C-2.1 | Implement personality loader for `PERSONALITY.md` and `USER.md` | `src/context/personality.ts` |
+| C-2.2 | Add truncation and formatting rules for injected personality content | `src/context/personality.ts` |
+| C-2.3 | Integrate personality block into prompt assembly | `src/context/assembler.ts`, `src/agent/prompt.ts`, `src/agent/runtime.ts` |
+| C-2.4 | Add tests for enabled, disabled, missing-file, and oversized-file cases | `src/context/personality.test.ts`, `src/agent/prompt.test.ts` |
+
+**Exit criteria:** Editing workspace personality files changes the next agent turn when `personality.enabled = true`; has no effect when disabled.
+
+---
+
+## Phase C-3 — Context Features: Skills
+
+**Goal:** Discover workspace skills, match them to the current request, and inject only the relevant skill instructions.
+
+| # | Task | Key Files |
+|---|------|-----------|
+| C-3.1 | Implement `SKILL.md` parser with YAML front matter support | `src/context/skills.ts` |
+| C-3.2 | Implement skill directory discovery and validation | `src/context/skills.ts` |
+| C-3.3 | Implement trigger scoring and top-N skill selection | `src/context/skills.ts` |
+| C-3.4 | Implement built-in `requires` providers: `current_jobs`, `scheduler_rules`, `job_schema`, `current_skills` | `src/context/skill-requires.ts` |
+| C-3.5 | Inject selected skills and required context into the prompt | `src/context/assembler.ts`, `src/agent/prompt.ts` |
+| C-3.6 | Seed default `job_creation` and `skill_creation` skills | `templates/skills/job_creation/SKILL.md`, `templates/skills/skill_creation/SKILL.md` |
+| C-3.7 | Add tests for trigger matching, malformed front matter, unknown `requires`, and prompt-size caps | `src/context/skills.test.ts` |
+
+**Exit criteria:** A request like "add a recurring task" injects the `job_creation` skill automatically without injecting unrelated skills.
+
+---
+
+## Phase C-4 — Context Features: Memories
+
+**Goal:** Add durable, bounded, SQLite-backed memories with explicit agent tools.
+
+| # | Task | Key Files |
+|---|------|-----------|
+| C-4.1 | Add `memories` table migration | `src/storage/migrations.ts` |
+| C-4.2 | Create memory DAO for CRUD and ranked search | `src/storage/memories.ts` |
+| C-4.3 | Implement memory formatter and retrieval logic | `src/context/memories.ts` |
+| C-4.4 | Add memory tools: `memory_list`, `memory_create`, `memory_update`, `memory_delete` | `src/tools/memory-*.ts` |
+| C-4.5 | Register memory tools conditionally when `memories.enabled = true` | `src/agent/tool-registry.ts` |
+| C-4.6 | Inject relevant memories into the prompt before each turn | `src/context/assembler.ts`, `src/agent/runtime.ts`, `src/agent/prompt.ts` |
+| C-4.7 | Add tests for ranking, bounds, CRUD, and disabled mode | `src/storage/memories.test.ts`, `src/context/memories.test.ts`, `src/tools/memory-*.test.ts` |
+
+**Exit criteria:** The agent can remember durable user facts through explicit tools and retrieve relevant memories on later turns without loading the entire table into the prompt.
+
+---
+
+## Phase C-5 — Context Features: Hardening and Polish
+
+**Goal:** Tighten behavior, improve observability, and prepare the features for CLI support.
+
+| # | Task | Key Files |
+|---|------|-----------|
+| C-5.1 | Add structured logging around skill selection and memory retrieval counts | `src/context/*.ts`, `src/agent/runtime.ts` |
+| C-5.2 | Add redaction checks for memory writes containing obvious secret material | `src/tools/memory-create.ts`, `src/security/redact.ts` |
+| C-5.3 | Add prompt-budget guards across personality, skills, and memories | `src/context/assembler.ts` |
+| C-5.4 | Document workspace layout and config knobs in README | `README.md` |
+| C-5.5 | Add future CLI hooks to the backlog: config toggles, memory inspection, skill listing | `tdmClaw_CLI_TDD.md`, `tdmClaw_CLI_IP.md` |
+
+**Exit criteria:** Runtime logs show which context features were injected, prompt size stays bounded, features are documented for operator use.
 
 ---
 
@@ -154,18 +238,24 @@ Post-v1. `calendar_create_event` is a Phase 5+ addition.
 ## Suggested Build Order Summary
 
 ```
-Phase 1 (Foundation)         ~1–2 days
-Phase 2 (Telegram + Agent)   ~3–5 days
-Phase 3 (Google)             ~2–3 days
-Phase 4 (Scheduler)          ~2–3 days
-Phase 5 (Hardening)          ~2–3 days
+Phase 1  (Foundation)                       ~1–2 days
+Phase 2  (Telegram + Agent)                 ~3–5 days
+Phase 3  (Google)                           ~2–3 days
+Phase 4  (Scheduler)                        ~2–3 days
+Phase 5  (Hardening + Deployment)  ← v1    ~2–3 days
+───────── v1 complete ─────────────────────────────────
+Phase C-1 (Context scaffolding)             ~0.5–1 day
+Phase C-2 (Personality)                     ~0.5 day
+Phase C-3 (Skills)                          ~1–1.5 days
+Phase C-4 (Memories)                        ~1–1.5 days
+Phase C-5 (Context hardening + polish)      ~0.5 day
 ```
 
 ---
 
 ## Acceptance Criteria for v1
 
-Implementation is complete when all of the following are true:
+Implementation is complete (Phase 5 done) when all of the following are true:
 
 1. The service runs continuously on a Raspberry Pi as a background `systemd` service.
 2. The owner can interact with it through Telegram.
@@ -178,3 +268,17 @@ Implementation is complete when all of the following are true:
 9. The assistant can run at least one recurring daily briefing job and deliver the result to Telegram.
 10. The prompt footprint remains intentionally small and bounded.
 11. The codebase remains understandable without requiring a plugin framework.
+
+---
+
+## Acceptance Criteria for Context Features (post-v1)
+
+Context features are complete (Phase C-5 done) when all of the following are true:
+
+1. The config file can enable or disable personality, skills, and memories independently.
+2. Install and bootstrap both seed default personality and skill files safely (copy-if-missing only).
+3. Personality files are reflected in the next agent turn when enabled.
+4. Relevant skills are injected automatically based on user-request trigger matching.
+5. Memories persist in SQLite and can be managed through explicit agent tools.
+6. The prompt context remains bounded and explainable across all three features.
+7. Disabling any feature returns the agent to baseline behavior without regressions.
