@@ -24,7 +24,8 @@ export function createTelegramBot(
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
   db: Database,
-  googleDeps?: GoogleCommandDeps
+  googleDeps?: GoogleCommandDeps,
+  jobsFilePath?: string
 ): TelegramBot {
   const log = childLogger("telegram");
   const bot = new Bot(config.botToken);
@@ -35,7 +36,8 @@ export function createTelegramBot(
     agentRuntime,
     discovery,
     db,
-    googleDeps
+    googleDeps,
+    jobsFilePath
   );
 
   // Route all messages through the unified handler so document uploads are handled.

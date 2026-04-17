@@ -2,17 +2,35 @@ import type { Database } from "better-sqlite3";
 import type { ScheduledJob } from "./types";
 import { randomUUID } from "crypto";
 
-const CLAIM_TTL_MINUTES = 5;
+const JOB_COLUMNS = `
+  id,
+  name,
+  type,
+  cron_expr     AS cronExpr,
+  timezone,
+  enabled,
+  payload_json  AS payloadJson,
+  last_run_at   AS lastRunAt,
+  next_run_at   AS nextRunAt,
+  claimed_at    AS claimedAt,
+  claim_token   AS claimToken,
+  created_at    AS createdAt,
+  updated_at    AS updatedAt
+`.trim();
 
 /**
  * Attempts to atomically claim a job for execution.
  * Returns the claim token if successful, or null if the job was already claimed
  * or is no longer due.
+ *
+ * claimTtlMs controls how long a claim is considered valid before the scheduler
+ * will re-attempt the job. It must be longer than the maximum expected job
+ * runtime (requestTimeoutSeconds * maxToolIterations) to prevent concurrent
+ * duplicate executions.
  */
-export function tryClaimJob(db: Database, jobId: string): string | null {
+export function tryClaimJob(db: Database, jobId: string, claimTtlMs: number): string | null {
   const claimToken = randomUUID();
   const now = new Date();
-  const claimExpiry = new Date(now.getTime() + CLAIM_TTL_MINUTES * 60 * 1000);
 
   const result = db
     .prepare(
@@ -28,7 +46,7 @@ export function tryClaimJob(db: Database, jobId: string): string | null {
       claimToken,
       jobId,
       now.toISOString(),
-      new Date(now.getTime() - CLAIM_TTL_MINUTES * 60 * 1000).toISOString()
+      new Date(now.getTime() - claimTtlMs).toISOString()
     );
 
   if ((result.changes ?? 0) === 0) return null;
@@ -64,14 +82,15 @@ export function releaseJobClaim(
 
 /**
  * Returns all jobs that are due and unclaimed (or whose claim has expired).
+ * Uses the same claimTtlMs as tryClaimJob so expiry semantics are consistent.
  */
-export function getDueJobs(db: Database): ScheduledJob[] {
+export function getDueJobs(db: Database, claimTtlMs: number): ScheduledJob[] {
   const now = new Date();
-  const claimExpiry = new Date(now.getTime() - CLAIM_TTL_MINUTES * 60 * 1000);
+  const claimExpiry = new Date(now.getTime() - claimTtlMs);
 
   return db
     .prepare(
-      `SELECT * FROM scheduled_jobs
+      `SELECT ${JOB_COLUMNS} FROM scheduled_jobs
        WHERE enabled = 1
          AND next_run_at <= ?
          AND (claimed_at IS NULL OR claimed_at < ?)`

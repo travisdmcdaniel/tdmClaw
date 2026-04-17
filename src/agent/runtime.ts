@@ -4,7 +4,7 @@ import type { AgentTurnInput, AgentTurnOutput } from "./types";
 import type { ModelProvider } from "./providers/types";
 import type { ModelDiscovery } from "./providers/discovery";
 import type { ToolRegistry } from "./tool-registry";
-import { buildSystemPrompt } from "./prompt";
+import { buildSystemPrompt, type SenderContext } from "./prompt";
 import { buildHistoryMessages } from "./history";
 import { loadSessionContext } from "./session";
 import { runAgentLoop } from "./loop";
@@ -52,7 +52,12 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
 
       // Build prompt and tool list
       const toolDefs = toolRegistry.getDefinitions();
-      const systemPrompt = buildSystemPrompt(config, toolDefs);
+      const senderCtx: SenderContext = {
+        chatId: sender.chatId,
+        telegramUserId: sender.telegramUserId,
+        username: sender.username,
+      };
+      const systemPrompt = buildSystemPrompt(config, toolDefs, senderCtx);
       const history = buildHistoryMessages(
         session.recentMessages,
         config.models.maxHistoryTurns

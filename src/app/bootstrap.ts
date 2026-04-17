@@ -11,6 +11,7 @@ import { createToolRegistry } from "../agent/tool-registry";
 import { createModelProvider } from "../agent/providers/openai-compatible";
 import { createModelDiscovery } from "../agent/providers/discovery";
 import { createSchedulerService } from "../scheduler/service";
+import { loadJobsFromFile, ensureJobsDir, seedJobsFileFromExample } from "../scheduler/jobs-loader";
 import { GoogleClientStore } from "../google/client-store";
 import { OAuthStateManager } from "../google/state";
 import { GoogleOAuth } from "../google/oauth";
@@ -96,13 +97,15 @@ export async function bootstrap(): Promise<void> {
   });
 
   // 8. Telegram bot
+  const resolvedJobsFile = config.scheduler.enabled ? config.scheduler.jobsFile : undefined;
   const bot = createTelegramBot(
     config.telegram,
     config.workspace.root,
     agentRuntime,
     discovery,
     db,
-    googleCommandDeps
+    googleCommandDeps,
+    resolvedJobsFile
   );
 
   // 9. Register commands with Telegram (populates the "/" menu in the app)
@@ -110,6 +113,14 @@ export async function bootstrap(): Promise<void> {
 
   // 10. Scheduler
   if (config.scheduler.enabled) {
+    ensureJobsDir(config.workspace.root, config.scheduler.jobsFile);
+    seedJobsFileFromExample(
+      config.workspace.root,
+      config.scheduler.jobsFile,
+      "config/jobs.example.json"
+    );
+    loadJobsFromFile(db, config.scheduler.jobsFile, config.workspace.root);
+
     const scheduler = createSchedulerService({
       config,
       db,
@@ -168,7 +179,6 @@ async function registerBotCommands(bot: Bot): Promise<void> {
       { command: "google_status",      description: "Show current Google connection status" },
       { command: "google_disconnect",  description: "Remove stored Google credentials" },
       { command: "jobs",               description: "List scheduled jobs and their status" },
-      { command: "briefing",           description: "Run the daily briefing immediately" },
     ]);
     log.info("Bot commands registered with Telegram");
   } catch (err) {

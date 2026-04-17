@@ -21,7 +21,7 @@ export function createListFilesTool(workspaceRoot: string): ToolHandler {
         properties: {
           path: {
             type: "string",
-            description: "Path relative to the workspace root to list.",
+            description: "Path relative to the workspace root to list, or an absolute path within it. Use \".\" or \"\" for the workspace root itself.",
           },
           depth: {
             type: "number",

@@ -12,6 +12,8 @@ import { deleteMessagesOlderThan } from "../storage/messages";
 import { prepareInboundMessage } from "./inbound";
 import type { GoogleCommandDeps } from "./commands/google";
 import { routeGoogleCommand } from "./commands/google";
+import { readJobDefinitions } from "../scheduler/jobs-loader";
+import { getNextRunAt } from "../scheduler/timing";
 
 const log = childLogger("telegram");
 
@@ -26,7 +28,8 @@ export function buildMessageHandler(
   agentRuntime: AgentRuntime,
   discovery: ModelDiscovery,
   db: Database,
-  googleDeps?: GoogleCommandDeps
+  googleDeps?: GoogleCommandDeps,
+  jobsFilePath?: string
 ): MessageHandler {
   return async (ctx: Context): Promise<void> => {
     const userId = String(ctx.from?.id ?? "");
@@ -47,7 +50,7 @@ export function buildMessageHandler(
     }
 
     if (inbound.kind === "command") {
-      await handleCommand(ctx, inbound.text, discovery, db, googleDeps);
+      await handleCommand(ctx, inbound.text, discovery, db, googleDeps, workspaceRoot, jobsFilePath);
       return;
     }
 
@@ -110,7 +113,9 @@ async function handleCommand(
   text: string,
   discovery: ModelDiscovery,
   db: Database,
-  googleDeps?: GoogleCommandDeps
+  googleDeps?: GoogleCommandDeps,
+  workspaceRoot?: string,
+  jobsFilePath?: string
 ): Promise<void> {
   const { command, args } = parseCommand(text);
 
@@ -141,12 +146,7 @@ async function handleCommand(
       await handleSetFallback(ctx, discovery, args);
       break;
     case "jobs":
-      // TODO: implement in Phase 4 (Scheduler)
-      await ctx.reply("Scheduler management is not yet implemented.");
-      break;
-    case "briefing":
-      // TODO: implement in Phase 4 (Scheduler)
-      await ctx.reply("Daily briefing is not yet implemented.");
+      await handleJobs(ctx, workspaceRoot, jobsFilePath);
       break;
     case "start":
     case "help":
@@ -162,13 +162,45 @@ async function handleCommand(
           "/google_complete <url> — finish Google authorization\n" +
           "/google_status — show Google connection status\n" +
           "/google_disconnect — disconnect Google account\n" +
-          "/jobs — manage scheduled jobs\n" +
-          "/briefing — run daily briefing now"
+          "/jobs — list scheduled jobs"
       );
       break;
     default:
       await ctx.reply(`Unknown command: /${command}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler handlers
+// ---------------------------------------------------------------------------
+
+async function handleJobs(
+  ctx: Context,
+  workspaceRoot?: string,
+  jobsFilePath?: string
+): Promise<void> {
+  if (!workspaceRoot || !jobsFilePath) {
+    await ctx.reply("Scheduler is not configured.");
+    return;
+  }
+
+  const defs = readJobDefinitions(jobsFilePath, workspaceRoot);
+  if (defs.length === 0) {
+    await ctx.reply("No scheduled jobs configured. Edit jobs/jobs.json in the workspace.");
+    return;
+  }
+
+  const lines = defs.map((job) => {
+    const status = job.enabled ? "enabled" : "disabled";
+    const tz = job.timezone ?? "UTC";
+    const nextRaw = getNextRunAt(job.cronExpr, tz);
+    const next = nextRaw
+      ? new Date(nextRaw).toLocaleString("en-US", { timeZone: tz, timeZoneName: "short" })
+      : "—";
+    return `[${job.id}] ${job.name} (${status})\n  Cron: ${job.cronExpr} (${tz})\n  Next: ${next}`;
+  });
+
+  await ctx.reply(`Scheduled jobs:\n\n${lines.join("\n\n")}`);
 }
 
 // ---------------------------------------------------------------------------

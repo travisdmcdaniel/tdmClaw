@@ -81,8 +81,7 @@ Enable calendar write access (to create events) by setting `google.scopes.calend
 | `/google_complete <url>` | Finish authorization by pasting the failed redirect URL from your browser |
 | `/google_status` | Show current Google connection state |
 | `/google_disconnect` | Remove stored Google credentials |
-| `/jobs` | List scheduled jobs and their status *(Phase 4)* |
-| `/briefing` | Run the daily briefing immediately *(Phase 4)* |
+| `/jobs` | List scheduled jobs and their status |
 
 ## Project Structure
 

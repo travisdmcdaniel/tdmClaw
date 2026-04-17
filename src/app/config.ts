@@ -62,6 +62,9 @@ const AppConfigSchema = z.object({
     applyPatch: z.object({
       enabled: z.boolean().default(true),
     }),
+    gmail: z.object({
+      maxResults: z.number().int().min(1).max(50).default(10),
+    }).default({}),
   }),
   google: z.object({
     enabled: z.boolean().default(false),
@@ -75,6 +78,7 @@ const AppConfigSchema = z.object({
     enabled: z.boolean().default(true),
     pollIntervalSeconds: z.number().int().positive().default(20),
     catchUpWindowMinutes: z.number().int().nonnegative().default(10),
+    jobsFile: z.string().default("jobs/jobs.json"),
   }),
 });
 

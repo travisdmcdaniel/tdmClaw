@@ -43,7 +43,7 @@ models:
     - qwen3.5:2b
     - qwen3.5:0.8b
   requestTimeoutSeconds: 600
-  maxToolIterations: 6
+  maxToolIterations: 10
   maxHistoryTurns: 6
   # Soft token hint for history trimming (informational only in v1)
   maxPromptTokensHint: 4000
@@ -69,6 +69,9 @@ tools:
       - "> /dev/"
   applyPatch:
     enabled: true
+  gmail:
+    # Maximum emails returned by gmail_list_recent. Range 1–20.
+    maxResults: 30
 
 google:
   enabled: false
@@ -83,3 +86,7 @@ scheduler:
   pollIntervalSeconds: 20
   # Jobs missed within this window after a restart will be caught up
   catchUpWindowMinutes: 10
+  # Path to the jobs definition file.
+  # Relative paths are resolved against the workspace root.
+  # Default: jobs/jobs.json (i.e. {workspace.root}/jobs/jobs.json)
+  # jobsFile: jobs/jobs.json

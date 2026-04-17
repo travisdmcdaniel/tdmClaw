@@ -8,7 +8,7 @@ type GmailListRecentArgs = {
   query?: string;
 };
 
-export function createGmailListRecentTool(gmail: GmailClient): ToolHandler {
+export function createGmailListRecentTool(gmail: GmailClient, defaultMaxResults = 10): ToolHandler {
   return {
     definition: {
       name: "gmail_list_recent",
@@ -25,7 +25,7 @@ export function createGmailListRecentTool(gmail: GmailClient): ToolHandler {
           },
           maxResults: {
             type: "number",
-            description: "Maximum number of emails to return. Range 1–20. Default: 10.",
+            description: "Maximum number of emails to return. Range 1-50. Default: 10.",
           },
           query: {
             type: "string",
@@ -43,7 +43,7 @@ export function createGmailListRecentTool(gmail: GmailClient): ToolHandler {
       const newerThanHours = ALLOWED_HOURS.includes(raw.newerThanHours ?? 0)
         ? (raw.newerThanHours as number)
         : 24;
-      const maxResults = Math.min(Math.max(1, Math.round(raw.maxResults ?? 10)), 20);
+      const maxResults = Math.min(Math.max(1, Math.round(raw.maxResults ?? defaultMaxResults)), 50);
 
       const emails = await gmail.listRecent({ newerThanHours, maxResults, query: raw.query });
 

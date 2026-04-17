@@ -24,7 +24,7 @@ export function createReadFileTool(workspaceRoot: string): ToolHandler {
         properties: {
           path: {
             type: "string",
-            description: "Path relative to the workspace root.",
+            description: "Path relative to the workspace root, or an absolute path within it.",
           },
           startLine: {
             type: "number",

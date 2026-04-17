@@ -1,0 +1,11 @@
+[
+  {
+    "id": "morning-briefing",
+    "name": "Morning Briefing",
+    "cronExpr": "0 8 * * *",
+    "timezone": "America/New_York",
+    "enabled": false,
+    "chatId": "YOUR_TELEGRAM_CHAT_ID",
+    "prompt": "Good morning! Check my Gmail for anything important from the last 24 hours, then check today's calendar. Give me a concise briefing — key emails first, then schedule."
+  }
+]

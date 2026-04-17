@@ -87,16 +87,25 @@ export function createApplyPatchTool(workspaceRoot: string): ToolHandler {
 // ---------------------------------------------------------------------------
 
 function parsePatch(input: string): PatchHunk[] {
+  // Normalize line endings and strip markdown code fences that LLMs may add.
+  let normalized = input.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  normalized = normalized.replace(/^```[^\n]*\n([\s\S]*?)```\s*$/gm, "$1");
+
   const hunks: PatchHunk[] = [];
-  // Matches: <<<<<<< <path>\n<old>\n=======\n<new>\n>>>>>>> <path>
-  const HUNK_RE = /^<<<<<<< (.+?)\n([\s\S]*?)\n=======\n([\s\S]*?)\n>>>>>>> .+?$/gm;
+  // Matches: <<<<<<< <path>\n<old>=======\n<new>>>>>>>> <path>
+  // oldContent and newContent may be empty, so we don't require a \n before
+  // the separator/end-marker — we split on the markers directly.
+  const HUNK_RE = /^<<<<<<< (.+?)\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>> .+?(?:\n|$)/gm;
 
   let match: RegExpExecArray | null;
-  while ((match = HUNK_RE.exec(input)) !== null) {
+  while ((match = HUNK_RE.exec(normalized)) !== null) {
+    // Strip trailing newline that the regex captured as part of the block.
+    const oldContent = match[2]!.replace(/\n$/, "");
+    const newContent = match[3]!.replace(/\n$/, "");
     hunks.push({
       path: match[1]!.trim(),
-      oldContent: match[2]!,
-      newContent: match[3]!,
+      oldContent,
+      newContent,
     });
   }
   return hunks;

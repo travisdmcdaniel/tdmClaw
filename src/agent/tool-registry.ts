@@ -126,7 +126,7 @@ function buildGoogleTools(
   const timezone = config.app.timezone;
 
   if (gmailRead) {
-    const listRecent = createGmailListRecentTool(gmail);
+    const listRecent = createGmailListRecentTool(gmail, config.tools.gmail.maxResults);
     const getMessage = createGmailGetMessageTool(gmail);
     tools.set(listRecent.definition.name, listRecent);
     tools.set(getMessage.definition.name, getMessage);
