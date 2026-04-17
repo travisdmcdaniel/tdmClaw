@@ -223,9 +223,19 @@ echo "  Build complete → dist/"
 if [[ "$DEPLOY_SYSTEMD" -eq 1 ]]; then
   # --- Systemd install ---
 
+  # If the config step was skipped, BOT_TOKEN was never collected. Extract the
+  # literal token value from the existing config file so the env file can be
+  # written. If it's already an env-ref, BOT_TOKEN stays empty and we skip it.
+  if [[ -z "${BOT_TOKEN:-}" ]]; then
+    BOT_TOKEN=$(sed -n "s/.*botToken: \"\(.*\)\"/\1/p" "$CONFIG_FILE" || true)
+  fi
+
   info "Creating service user '${SERVICE_USER}'"
   if ! id "$SERVICE_USER" &>/dev/null; then
-    useradd -r -s /bin/false -d "$INSTALL_DIR" "$SERVICE_USER"
+    # Ensure the group exists first (may be left over from a previous install),
+    # then create the user referencing that group to avoid a "group exists" error.
+    getent group "$SERVICE_USER" &>/dev/null || groupadd -r "$SERVICE_USER"
+    useradd -r -s /bin/false -d "$INSTALL_DIR" -g "$SERVICE_USER" "$SERVICE_USER"
     echo "  User created."
   else
     echo "  User already exists."
@@ -241,8 +251,9 @@ if [[ "$DEPLOY_SYSTEMD" -eq 1 ]]; then
   info "Installing config to ${CONFIG_DEST}"
   mkdir -p /etc/tdmclaw
   cp "$CONFIG_FILE" "$CONFIG_DEST"
-  # Replace the literal token with an env-ref so it does not live in the config file.
-  sed -i "s|botToken: \"${BOT_TOKEN}\"|botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN|" "$CONFIG_DEST"
+  # Replace any literal token value with an env-ref so it does not live in the
+  # config file. Safe to run even if already an env-ref (pattern won't match).
+  sed -i 's|  botToken: ".*"|  botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN|' "$CONFIG_DEST"
   chown root:"$SERVICE_USER" /etc/tdmclaw "$CONFIG_DEST"
   chmod 750 /etc/tdmclaw
   chmod 640 "$CONFIG_DEST"
@@ -263,11 +274,15 @@ if [[ "$DEPLOY_SYSTEMD" -eq 1 ]]; then
   echo "  ${WORKSPACE_ROOT}"
 
   info "Writing environment file to ${ENV_DEST}"
-  cat > "$ENV_DEST" <<ENV
-TDMCLAW_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}
-TDMCLAW_CONFIG_PATH=${CONFIG_DEST}
-NODE_ENV=production
-ENV
+  {
+    if [[ -n "${BOT_TOKEN:-}" ]]; then
+      echo "TDMCLAW_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}"
+    else
+      warn "Bot token not written to env file (already an env-ref in config). Set TDMCLAW_TELEGRAM_BOT_TOKEN manually in ${ENV_DEST}."
+    fi
+    echo "TDMCLAW_CONFIG_PATH=${CONFIG_DEST}"
+    echo "NODE_ENV=production"
+  } > "$ENV_DEST"
   chown root:"$SERVICE_USER" "$ENV_DEST"
   chmod 640 "$ENV_DEST"
 
