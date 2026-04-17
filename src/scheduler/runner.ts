@@ -17,13 +17,18 @@ const log = childLogger("scheduler");
  * claimTtlMs must be long enough to cover the worst-case job runtime
  * (requestTimeoutSeconds * maxToolIterations). If the job is still running
  * when the TTL expires the scheduler will treat it as stalled and re-run it.
+ *
+ * preRunHook, if provided, is awaited before the agent turn. Use it to
+ * pre-warm credentials (e.g. refresh an OAuth token) so the first tool call
+ * doesn't pay the refresh cost mid-execution.
  */
 export async function runJob(
   db: Database,
   job: ScheduledJob,
   agentRuntime: AgentRuntime,
   sendMessage: (chatId: string, text: string) => Promise<void>,
-  claimTtlMs: number
+  claimTtlMs: number,
+  preRunHook?: () => Promise<void>
 ): Promise<void> {
   const claimToken = tryClaimJob(db, job.id, claimTtlMs);
   if (!claimToken) {
@@ -65,6 +70,10 @@ export async function runJob(
   }
 
   try {
+    if (preRunHook) {
+      await preRunHook();
+    }
+
     const result = await agentRuntime.runTurn({
       userMessage: payload.prompt,
       sender: {

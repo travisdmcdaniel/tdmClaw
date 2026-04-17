@@ -21,6 +21,8 @@ export type SchedulerDeps = {
   db: Database;
   agentRuntime: AgentRuntime;
   bot: TelegramBot;
+  /** Called before each job's agent turn — use to pre-warm credentials. */
+  preRunHook?: () => Promise<void>;
 };
 
 /**
@@ -35,7 +37,7 @@ export type SchedulerDeps = {
  * deleted ones) before processing due jobs.
  */
 export function createSchedulerService(deps: SchedulerDeps): SchedulerService {
-  const { config, db, agentRuntime, bot } = deps;
+  const { config, db, agentRuntime, bot, preRunHook } = deps;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const jobsFilePath = isAbsolute(config.scheduler.jobsFile)
@@ -80,7 +82,7 @@ export function createSchedulerService(deps: SchedulerDeps): SchedulerService {
 
     for (const job of dueJobs) {
       // Fire and forget — each job runs independently
-      void runJob(db, job, agentRuntime, sendMessage, claimTtlMs);
+      void runJob(db, job, agentRuntime, sendMessage, claimTtlMs, preRunHook);
     }
   }
 

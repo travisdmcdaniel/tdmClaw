@@ -126,6 +126,12 @@ export async function bootstrap(): Promise<void> {
       db,
       agentRuntime,
       bot,
+      // Pre-warm the Google access token before each job's agent turn so it
+      // never expires mid-tool-call. getAccessToken() is a no-op when the
+      // token is still fresh, so this adds negligible overhead.
+      preRunHook: config.google.enabled
+        ? () => tokenStore.getAccessToken().then(() => undefined)
+        : undefined,
     });
     scheduler.start();
     onShutdown("scheduler", () => scheduler.stop());
