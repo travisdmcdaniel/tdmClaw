@@ -104,6 +104,18 @@ systemd/
   tdmclaw.service       systemd unit file for Pi deployment
 ```
 
+## Updating
+
+Run `update.sh` from the source directory:
+
+```bash
+cd /path/to/tdmClaw
+bash update.sh          # local dev install
+sudo bash update.sh     # systemd install
+```
+
+The script pulls the latest changes, reinstalls dependencies, rebuilds, and then deploys: for a systemd install it stops the service, copies the new build to the install directory, and restarts; for a local install it refreshes the global npm links.
+
 ## Deployment on Raspberry Pi
 
 ### systemd service

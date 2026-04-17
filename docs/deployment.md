@@ -105,13 +105,18 @@ The source directory is never removed automatically.
 
 ## Updating
 
+Run `update.sh` from the source directory:
+
 ```bash
 cd /path/to/tdmClaw
-git pull
-npm install
-npm run build
-sudo systemctl restart tdmclaw   # omit if not running under systemd
+bash update.sh          # local dev install
+sudo bash update.sh     # systemd install
 ```
+
+The script pulls the latest changes, runs `npm install` and `npm run build`, then deploys based on what it detects:
+
+- **systemd install** (unit file present): stops the service, copies the new `dist/` and `node_modules/` to the install directory, then restarts the service. Root is required.
+- **local dev install**: rebuilds and refreshes the global `tdmclaw` and `tdmclaw-cli` npm links.
 
 ---
 
