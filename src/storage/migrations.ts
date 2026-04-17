@@ -123,6 +123,33 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_oauth_states_chat       ON oauth_states (telegram_chat_id);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      -- Recreate job_runs with ON DELETE CASCADE so removing a job from
+      -- jobs.json also removes its run history without a FK violation.
+      -- SQLite requires a full table rebuild to change FK constraints.
+      -- No PRAGMA foreign_keys toggle needed: DROP TABLE ignores FK constraints,
+      -- and the INSERT copies existing data which is already referentially valid.
+      CREATE TABLE job_runs_new (
+        id              TEXT PRIMARY KEY,
+        job_id          TEXT NOT NULL,
+        started_at      TEXT NOT NULL,
+        finished_at     TEXT,
+        status          TEXT NOT NULL,
+        result_summary  TEXT,
+        error_text      TEXT,
+        FOREIGN KEY (job_id) REFERENCES scheduled_jobs(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO job_runs_new SELECT * FROM job_runs;
+      DROP TABLE job_runs;
+      ALTER TABLE job_runs_new RENAME TO job_runs;
+
+      CREATE INDEX IF NOT EXISTS idx_job_runs_job_id
+        ON job_runs(job_id, started_at);
+    `,
+  },
 ];
 
 /**

@@ -36,40 +36,37 @@ export async function runJob(
     return;
   }
 
-  const runId = randomUUID();
-  const startedAt = new Date().toISOString();
-
-  saveJobRun(db, {
-    id: runId,
-    jobId: job.id,
-    startedAt,
-    status: "running",
-  });
-
-  log.info({ jobId: job.id, name: job.name }, "Job started");
-
+  // Parse payload before claiming/saving so chatId is always available for
+  // error reporting and the claim is never taken if the payload is malformed.
   let payload: PromptJobPayload;
   try {
     payload = JSON.parse(job.payloadJson) as PromptJobPayload;
   } catch {
-    const errorText = "Invalid payloadJson — could not parse";
-    log.error({ jobId: job.id }, errorText);
-    saveJobRun(db, { id: runId, jobId: job.id, startedAt, finishedAt: new Date().toISOString(), status: "failure", errorText });
+    log.error({ jobId: job.id }, "Invalid payloadJson — could not parse");
     const nextRunAt = getNextRunAt(job.cronExpr, job.timezone) ?? "";
     releaseJobClaim(db, job.id, claimToken, nextRunAt);
     return;
   }
 
   if (!payload.prompt || !payload.chatId) {
-    const errorText = "Job payload missing prompt or chatId";
-    log.error({ jobId: job.id, payload }, errorText);
-    saveJobRun(db, { id: runId, jobId: job.id, startedAt, finishedAt: new Date().toISOString(), status: "failure", errorText });
+    log.error({ jobId: job.id }, "Job payload missing prompt or chatId");
     const nextRunAt = getNextRunAt(job.cronExpr, job.timezone) ?? "";
     releaseJobClaim(db, job.id, claimToken, nextRunAt);
     return;
   }
 
+  const runId = randomUUID();
+  const startedAt = new Date().toISOString();
+  // Track whether the "running" job_run row was saved so the catch block
+  // knows whether to update it to "failure" or skip.
+  let jobRunSaved = false;
+
   try {
+    saveJobRun(db, { id: runId, jobId: job.id, startedAt, status: "running" });
+    jobRunSaved = true;
+
+    log.info({ jobId: job.id, name: job.name }, "Job started");
+
     if (preRunHook) {
       await preRunHook();
     }
@@ -80,6 +77,7 @@ export async function runJob(
         telegramUserId: "scheduler",
         chatId: payload.chatId,
       },
+      isolatedSession: true,
     });
 
     const finishedAt = new Date().toISOString();
@@ -101,15 +99,11 @@ export async function runJob(
     const finishedAt = new Date().toISOString();
     const errorText = err instanceof Error ? err.message : String(err);
 
-    saveJobRun(db, {
-      id: runId,
-      jobId: job.id,
-      startedAt,
-      finishedAt,
-      status: "failure",
-      errorText,
-    });
+    if (jobRunSaved) {
+      saveJobRun(db, { id: runId, jobId: job.id, startedAt, finishedAt, status: "failure", errorText });
+    }
 
+    // Always release the claim so the job can be retried on the next run.
     const nextRunAt = getNextRunAt(job.cronExpr, job.timezone) ?? "";
     releaseJobClaim(db, job.id, claimToken, nextRunAt);
 

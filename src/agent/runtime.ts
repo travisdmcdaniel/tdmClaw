@@ -6,7 +6,8 @@ import type { ModelDiscovery } from "./providers/discovery";
 import type { ToolRegistry } from "./tool-registry";
 import { buildSystemPrompt, type SenderContext } from "./prompt";
 import { buildHistoryMessages } from "./history";
-import { loadSessionContext } from "./session";
+import { loadSessionContext, createNewSession } from "./session";
+import type { SessionContext } from "./session";
 import { runAgentLoop } from "./loop";
 import { formatAgentResponse } from "./response";
 import { saveMessage } from "../storage/messages";
@@ -37,15 +38,15 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
 
   return {
     async runTurn(input: AgentTurnInput): Promise<AgentTurnOutput> {
-      const { userMessage, sender } = input;
+      const { userMessage, sender, isolatedSession } = input;
 
       // Resolve the active session for this chat (creates one if none exists).
-      const session = loadSessionContext(
-        db,
-        sender.chatId,
-        sender.telegramUserId,
-        config.models.maxHistoryTurns
-      );
+      // Isolated callers (e.g. scheduled jobs) always get a brand-new session
+      // with no history loaded — they should never inherit either the user's
+      // interactive chat history or accumulated history from prior job runs.
+      const session = isolatedSession
+        ? createFreshSession(db, sender.chatId, sender.telegramUserId)
+        : loadSessionContext(db, sender.chatId, sender.telegramUserId, config.models.maxHistoryTurns);
       const sessionId = session.sessionId;
 
       log.info({ sessionId, userId: sender.telegramUserId }, "Agent turn start");
@@ -157,5 +158,23 @@ export function createAgentRuntime(deps: AgentRuntimeDeps): AgentRuntime {
         hitIterationLimit: loopOutput.hitIterationLimit,
       };
     },
+  };
+}
+
+/**
+ * Creates a brand-new session with no history. Used by isolated callers
+ * (e.g. scheduled jobs) that must start with a clean slate every run.
+ */
+function createFreshSession(
+  db: Database,
+  chatId: string,
+  userId: string
+): SessionContext {
+  const sessionId = createNewSession(db, chatId, userId);
+  return {
+    sessionId,
+    telegramChatId: chatId,
+    telegramUserId: userId,
+    recentMessages: [],
   };
 }

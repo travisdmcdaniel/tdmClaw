@@ -7,6 +7,12 @@ export type AgentTurnInput = {
     chatId: string;
     username?: string;
   };
+  /**
+   * When true the runtime resolves a separate session namespace for this turn
+   * (keyed as "scheduler:<chatId>") so it never inherits the user's chat
+   * history. Use for scheduled jobs and other non-interactive callers.
+   */
+  isolatedSession?: boolean;
 };
 
 export type AgentTurnOutput = {
