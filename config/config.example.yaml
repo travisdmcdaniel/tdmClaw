@@ -59,7 +59,8 @@ tools:
     maxOutputChars: 4096
     # off | owner-only
     approvalMode: owner-only
-    # Commands blocked regardless of other settings
+    # --- Denylist mode (default) ---
+    # Commands blocked regardless of other settings (exact match or substring)
     blockedCommands:
       - rm -rf /
       - mkfs
@@ -67,6 +68,13 @@ tools:
     blockedPatterns:
       - "sudo rm -rf"
       - "> /dev/"
+    # --- Allowlist mode (stricter alternative) ---
+    # When allowlistMode is true, ONLY commands matching allowedCommands (exact)
+    # or allowedPatterns (regex) are permitted. blockedCommands/blockedPatterns
+    # are ignored in this mode.
+    allowlistMode: false
+    allowedCommands: []
+    allowedPatterns: []
   applyPatch:
     enabled: true
   gmail:
@@ -90,3 +98,5 @@ scheduler:
   # Relative paths are resolved against the workspace root.
   # Default: jobs/jobs.json (i.e. {workspace.root}/jobs/jobs.json)
   # jobsFile: jobs/jobs.json
+  # Send an escalated alert when a job fails this many consecutive times.
+  consecutiveFailureAlertThreshold: 3

@@ -3,7 +3,7 @@ import type { AgentRuntime } from "../agent/runtime";
 import type { ScheduledJob, PromptJobPayload } from "./types";
 import { tryClaimJob, releaseJobClaim } from "./locks";
 import { getNextRunAt } from "./timing";
-import { saveJobRun } from "../storage/job-runs";
+import { saveJobRun, countConsecutiveFailures } from "../storage/job-runs";
 import { childLogger } from "../app/logger";
 import { randomUUID } from "crypto";
 
@@ -28,6 +28,7 @@ export async function runJob(
   agentRuntime: AgentRuntime,
   sendMessage: (chatId: string, text: string) => Promise<void>,
   claimTtlMs: number,
+  consecutiveFailureAlertThreshold: number,
   preRunHook?: () => Promise<void>
 ): Promise<void> {
   const claimToken = tryClaimJob(db, job.id, claimTtlMs);
@@ -108,6 +109,21 @@ export async function runJob(
     releaseJobClaim(db, job.id, claimToken, nextRunAt);
 
     log.error({ jobId: job.id, name: job.name, err }, "Job failed");
-    await sendMessage(payload.chatId, `Scheduled job "${job.name}" failed: ${errorText}`);
+
+    // Count consecutive failures (including the one just saved) and escalate
+    // once the threshold is reached. Below the threshold send a plain notice.
+    const consecutiveFailures = countConsecutiveFailures(db, job.id);
+    if (consecutiveFailures >= consecutiveFailureAlertThreshold) {
+      await sendMessage(
+        payload.chatId,
+        `⚠️ Scheduled job "${job.name}" has failed ${consecutiveFailures} consecutive times.\n` +
+          `Last error: ${errorText}`
+      );
+    } else {
+      await sendMessage(
+        payload.chatId,
+        `Scheduled job "${job.name}" failed: ${errorText}`
+      );
+    }
   }
 }

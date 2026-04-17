@@ -82,7 +82,15 @@ export function createSchedulerService(deps: SchedulerDeps): SchedulerService {
 
     for (const job of dueJobs) {
       // Fire and forget — each job runs independently
-      void runJob(db, job, agentRuntime, sendMessage, claimTtlMs, preRunHook);
+      void runJob(
+        db,
+        job,
+        agentRuntime,
+        sendMessage,
+        claimTtlMs,
+        config.scheduler.consecutiveFailureAlertThreshold,
+        preRunHook
+      );
     }
   }
 

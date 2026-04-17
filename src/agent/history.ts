@@ -2,45 +2,66 @@ import type { StoredMessage } from "./types";
 import type { ModelMessage } from "./providers/types";
 
 /**
- * Loads the most recent N messages from a session and converts them
- * to the format expected by the model provider.
+ * Builds history messages from a session's stored messages, taking the last
+ * `maxTurns` complete exchanges.
  *
- * Only user, assistant, and tool messages are included — system messages
- * are handled separately in prompt.ts.
+ * A "turn" is one user message plus all the assistant and tool messages that
+ * follow it before the next user message. Grouping by turn ensures we never
+ * send a partial tool-call sequence (e.g. an assistant tool-call message
+ * without its tool result), which some models reject.
+ *
+ * System messages are excluded — they are injected separately by the prompt builder.
  */
 export function buildHistoryMessages(
   messages: StoredMessage[],
   maxTurns: number
 ): ModelMessage[] {
-  // A "turn" is one user + one assistant exchange; tool messages attach to assistant turns.
-  // We take the last maxTurns*2 non-system messages as a simple approximation.
-  const relevant = messages
-    .filter((m) => m.role !== "system")
-    .slice(-maxTurns * 2);
+  const nonSystem = messages.filter((m) => m.role !== "system");
 
-  return relevant.map((m): ModelMessage => {
-    if (m.role === "tool") {
-      return {
-        role: "tool",
-        content: m.content,
-        toolCallId: m.toolCallId ?? "",
-        toolName: m.toolName ?? "",
-      };
+  // Group into turns: each turn starts at a user message and includes all
+  // subsequent assistant/tool messages until the next user message.
+  const turns: StoredMessage[][] = [];
+  let current: StoredMessage[] = [];
+
+  for (const msg of nonSystem) {
+    if (msg.role === "user" && current.length > 0) {
+      turns.push(current);
+      current = [];
     }
-    if (m.role === "assistant" && m.toolCallsJson) {
-      let toolCalls: import("./providers/types").ToolCallRequest[] = [];
-      try {
-        toolCalls = JSON.parse(m.toolCallsJson) as import("./providers/types").ToolCallRequest[];
-      } catch {
-        // malformed stored JSON — fall through to plain assistant message
+    current.push(msg);
+  }
+  if (current.length > 0) {
+    turns.push(current);
+  }
+
+  // Keep only the most recent maxTurns complete turns.
+  const selected = turns.slice(-maxTurns);
+
+  return selected.flatMap((turn) =>
+    turn.map((m): ModelMessage => {
+      if (m.role === "tool") {
+        return {
+          role: "tool",
+          content: m.content,
+          toolCallId: m.toolCallId ?? "",
+          toolName: m.toolName ?? "",
+        };
       }
-      if (toolCalls.length > 0) {
-        return { role: "assistant", content: m.content, toolCalls };
+      if (m.role === "assistant" && m.toolCallsJson) {
+        let toolCalls: import("./providers/types").ToolCallRequest[] = [];
+        try {
+          toolCalls = JSON.parse(m.toolCallsJson) as import("./providers/types").ToolCallRequest[];
+        } catch {
+          // malformed stored JSON — fall through to plain assistant message
+        }
+        if (toolCalls.length > 0) {
+          return { role: "assistant", content: m.content, toolCalls };
+        }
       }
-    }
-    if (m.role === "assistant") {
-      return { role: "assistant", content: m.content };
-    }
-    return { role: "user", content: m.content };
-  });
+      if (m.role === "assistant") {
+        return { role: "assistant", content: m.content };
+      }
+      return { role: "user", content: m.content };
+    })
+  );
 }

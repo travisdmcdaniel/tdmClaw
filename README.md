@@ -27,7 +27,7 @@ A lightweight, self-hosted AI assistant designed to run continuously as a servic
 ```bash
 git clone https://github.com/travisdmcdaniel/tdmClaw.git
 cd tdmClaw
-bash install.sh
+sudo bash install.sh
 ```
 
 The installer will:

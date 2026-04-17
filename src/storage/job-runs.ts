@@ -30,3 +30,25 @@ export function getJobRuns(db: Database, jobId: string, limit = 20): JobRun[] {
     )
     .all(jobId, limit) as JobRun[];
 }
+
+/**
+ * Returns the number of consecutive terminal failures at the end of a job's
+ * run history. Only "failure" rows count; a "success" or "running" row resets
+ * the streak to zero. Looks at the most recent `lookback` runs.
+ */
+export function countConsecutiveFailures(
+  db: Database,
+  jobId: string,
+  lookback = 10
+): number {
+  const runs = getJobRuns(db, jobId, lookback);
+  let count = 0;
+  for (const run of runs) {
+    if (run.status === "failure") {
+      count++;
+    } else {
+      break;
+    }
+  }
+  return count;
+}

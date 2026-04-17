@@ -14,8 +14,14 @@ const ExecToolSchema = z.object({
   timeoutSeconds: z.number().int().positive().default(30),
   maxOutputChars: z.number().int().positive().default(4096),
   approvalMode: z.enum(["off", "owner-only"]).default("owner-only"),
+  // Denylist (default): block matched commands; all others are permitted.
   blockedCommands: z.array(z.string()).default([]),
   blockedPatterns: z.array(z.string()).default([]),
+  // Allowlist mode: when enabled, ONLY commands matching an entry are permitted.
+  // blockedCommands / blockedPatterns are ignored when this is active.
+  allowlistMode: z.boolean().default(false),
+  allowedCommands: z.array(z.string()).default([]),
+  allowedPatterns: z.array(z.string()).default([]),
 });
 
 const AppConfigSchema = z.object({
@@ -79,6 +85,8 @@ const AppConfigSchema = z.object({
     pollIntervalSeconds: z.number().int().positive().default(20),
     catchUpWindowMinutes: z.number().int().nonnegative().default(10),
     jobsFile: z.string().default("jobs/jobs.json"),
+    // Send an escalated Telegram alert when a job fails this many consecutive times.
+    consecutiveFailureAlertThreshold: z.number().int().min(1).default(3),
   }),
 });
 

@@ -230,11 +230,24 @@ if prompt_yn "Set up systemd service for deployment?" "n"; then
   chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
   CONFIG_DEST="/etc/tdmclaw/config.yaml"
+  ENV_DEST="/etc/tdmclaw/tdmclaw.env"
   info "Installing config to ${CONFIG_DEST}"
   mkdir -p /etc/tdmclaw
   cp "$CONFIG_FILE" "$CONFIG_DEST"
-  chown -R "$SERVICE_USER:$SERVICE_USER" /etc/tdmclaw
+  # Replace the literal token with an env-ref so it does not live in the config file.
+  sed -i "s|botToken: \"${BOT_TOKEN}\"|botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN|" "$CONFIG_DEST"
+  chown root:"$SERVICE_USER" /etc/tdmclaw "$CONFIG_DEST"
+  chmod 750 /etc/tdmclaw
   chmod 640 "$CONFIG_DEST"
+
+  info "Writing environment file to ${ENV_DEST}"
+  cat > "$ENV_DEST" <<ENV
+TDMCLAW_TELEGRAM_BOT_TOKEN=${BOT_TOKEN}
+TDMCLAW_CONFIG_PATH=${CONFIG_DEST}
+NODE_ENV=production
+ENV
+  chown root:"$SERVICE_USER" "$ENV_DEST"
+  chmod 640 "$ENV_DEST"
 
   info "Writing systemd unit file"
   cat > /etc/systemd/system/tdmclaw.service <<UNIT
@@ -248,8 +261,8 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${ENV_DEST}
 ExecStart=/usr/bin/node ${INSTALL_DIR}/dist/index.js
-Environment=TDMCLAW_CONFIG_PATH=${CONFIG_DEST}
 Restart=always
 RestartSec=5
 StandardOutput=journal
@@ -279,6 +292,7 @@ fi
 echo
 info "Done."
 echo
-echo "  To start:         tdmclaw"
-echo "  Development mode: npm run dev"
+echo "  To start:            tdmclaw"
+echo "  Development mode:    npm run dev"
+echo "  Management CLI:      tdmclaw-cli --help"
 echo
