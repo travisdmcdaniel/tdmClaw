@@ -28,6 +28,23 @@ UNIT_FILE="/etc/systemd/system/tdmclaw.service"
 # 1. Check build tools
 # ---------------------------------------------------------------------------
 
+info "Checking Node.js version"
+if ! command -v node &>/dev/null; then
+  die "Node.js is not installed."
+fi
+node_major=$(node --version | sed 's/v\([0-9]*\).*/\1/')
+if (( node_major < 22 )); then
+  die "Node.js 22+ is required (found $(node --version))."
+fi
+if (( node_major > 22 )); then
+  die "Node.js $(node --version) is not supported. Node 24+ requires C++20 for
+  native addon compilation and lacks prebuilt arm64 binaries for better-sqlite3.
+  Please install Node.js 22 LTS:
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt-get install -y nodejs"
+fi
+echo "  Node.js $(node --version) — ok"
+
 info "Checking build tools"
 if ! command -v make &>/dev/null || ! command -v gcc &>/dev/null; then
   if [[ $EUID -eq 0 ]] && command -v apt-get &>/dev/null; then

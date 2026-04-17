@@ -60,6 +60,17 @@ if (( node_major < 22 )); then
   die "Node.js 22+ is required (found $(node --version))."
 fi
 
+# Node 24+ requires C++20 when compiling native addons such as better-sqlite3.
+# Prebuilt binaries for arm64 are also unavailable on cutting-edge Node releases.
+# Node 22 is the current Active LTS and is strongly recommended.
+if (( node_major > 22 )); then
+  die "Node.js $(node --version) is not supported. Node 24+ requires C++20 for
+  native addon compilation and lacks prebuilt arm64 binaries for better-sqlite3.
+  Please install Node.js 22 LTS:
+    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+    sudo apt-get install -y nodejs"
+fi
+
 if ! command -v npm &>/dev/null; then
   die "npm is not found. Install Node.js 22+ and re-run."
 fi
