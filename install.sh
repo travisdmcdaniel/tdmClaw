@@ -14,7 +14,7 @@ yellow=$'\e[33m'
 red=$'\e[31m'
 
 info()    { echo "${bold}${green}==>${reset} $*"; }
-warn()    { echo "${bold}${yellow}warn:${reset} $*"; }
+warn()    { echo "${bold}${yellow}warn:${reset} $*" >&2; }
 die()     { echo "${bold}${red}error:${reset} $*" >&2; exit 1; }
 
 prompt() {
@@ -111,7 +111,35 @@ cd "$SCRIPT_DIR"
 npm install --prefer-offline 2>&1 | tail -3
 
 # ---------------------------------------------------------------------------
-# 3. Collect configuration
+# 3. Deployment type
+# Ask upfront so path defaults can be set appropriately before prompting.
+# ---------------------------------------------------------------------------
+
+echo
+DEPLOY_SYSTEMD=0
+if prompt_yn "Set up systemd service for deployment?" "n"; then
+  if [[ $EUID -ne 0 ]]; then
+    die "systemd setup requires root. Re-run with: sudo bash install.sh"
+  fi
+  DEPLOY_SYSTEMD=1
+
+  prompt INSTALL_DIR \
+    "Install directory" \
+    "/opt/tdmclaw"
+
+  prompt SERVICE_USER \
+    "Service user (will be created if it doesn't exist)" \
+    "tdmclaw"
+
+  DEFAULT_DATA_DIR="/var/lib/tdmclaw/data"
+  DEFAULT_WORKSPACE_ROOT="/var/lib/tdmclaw/workspace"
+else
+  DEFAULT_DATA_DIR="$REAL_HOME/.tdmclaw/data"
+  DEFAULT_WORKSPACE_ROOT="$REAL_HOME/.tdmclaw/workspace"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Collect configuration
 # ---------------------------------------------------------------------------
 
 info "Configuration"
@@ -136,11 +164,11 @@ if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then
 
   prompt WORKSPACE_ROOT \
     "Workspace root directory" \
-    "$REAL_HOME/.tdmclaw/workspace"
+    "$DEFAULT_WORKSPACE_ROOT"
 
   prompt DATA_DIR \
     "Data directory (SQLite database)" \
-    "$REAL_HOME/.tdmclaw/data"
+    "$DEFAULT_DATA_DIR"
 
   prompt MODEL_BASE_URL \
     "Ollama base URL" \
@@ -178,45 +206,22 @@ if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then
   unset _userid_tmp _uid
 
   echo "  Written to config/config.yaml"
-  info "Creating workspace and data directories"
-  mkdir -p "$WORKSPACE_ROOT" "$DATA_DIR"
-  # If running under sudo, give ownership to the real user.
-  if [[ -n "${SUDO_USER:-}" ]]; then
-    chown -R "$SUDO_USER:$SUDO_USER" "$WORKSPACE_ROOT" "$DATA_DIR"
-  fi
-  echo "  ${WORKSPACE_ROOT}"
-  echo "  ${DATA_DIR}"
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Build
+# 5. Build
 # ---------------------------------------------------------------------------
 
 info "Building (tsc)"
 npm run build
 echo "  Build complete → dist/"
 
-info "Linking tdmclaw command"
-npm link
-echo "  'tdmclaw' is now available as a global command."
-
 # ---------------------------------------------------------------------------
-# 5. Optional: systemd deployment
+# 6. Deploy
 # ---------------------------------------------------------------------------
 
-echo
-if prompt_yn "Set up systemd service for deployment?" "n"; then
-  if [[ $EUID -ne 0 ]]; then
-    die "systemd setup requires root. Re-run with: sudo bash install.sh"
-  fi
-
-  prompt INSTALL_DIR \
-    "Install directory" \
-    "/opt/tdmclaw"
-
-  prompt SERVICE_USER \
-    "Service user (will be created if it doesn't exist)" \
-    "tdmclaw"
+if [[ "$DEPLOY_SYSTEMD" -eq 1 ]]; then
+  # --- Systemd install ---
 
   info "Creating service user '${SERVICE_USER}'"
   if ! id "$SERVICE_USER" &>/dev/null; then
@@ -231,17 +236,6 @@ if prompt_yn "Set up systemd service for deployment?" "n"; then
   cp -r "$SCRIPT_DIR/dist" "$SCRIPT_DIR/node_modules" "$INSTALL_DIR/"
   chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
-  # Prompt for system-level data and workspace paths. The paths chosen during
-  # the config step above default to the invoking user's home directory, which
-  # the service user cannot write to. Offer writable locations under /var/lib.
-  prompt SVC_DATA_DIR \
-    "Service data directory (owned by ${SERVICE_USER})" \
-    "/var/lib/tdmclaw/data"
-
-  prompt SVC_WORKSPACE_ROOT \
-    "Service workspace directory (owned by ${SERVICE_USER})" \
-    "/var/lib/tdmclaw/workspace"
-
   CONFIG_DEST="/etc/tdmclaw/config.yaml"
   ENV_DEST="/etc/tdmclaw/tdmclaw.env"
   info "Installing config to ${CONFIG_DEST}"
@@ -249,27 +243,24 @@ if prompt_yn "Set up systemd service for deployment?" "n"; then
   cp "$CONFIG_FILE" "$CONFIG_DEST"
   # Replace the literal token with an env-ref so it does not live in the config file.
   sed -i "s|botToken: \"${BOT_TOKEN}\"|botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN|" "$CONFIG_DEST"
-  # Override data and workspace paths to service-writable locations.
-  sed -i "s|dataDir: ${DATA_DIR}|dataDir: ${SVC_DATA_DIR}|" "$CONFIG_DEST"
-  sed -i "s|root: ${WORKSPACE_ROOT}|root: ${SVC_WORKSPACE_ROOT}|" "$CONFIG_DEST"
   chown root:"$SERVICE_USER" /etc/tdmclaw "$CONFIG_DEST"
   chmod 750 /etc/tdmclaw
   chmod 640 "$CONFIG_DEST"
 
-  info "Creating service data and workspace directories"
-  mkdir -p "$SVC_DATA_DIR" "$SVC_WORKSPACE_ROOT"
+  info "Creating data and workspace directories"
+  mkdir -p "$DATA_DIR" "$WORKSPACE_ROOT"
   # Set group ownership to the service user's group and enable the setgid bit so
   # files created by the service inherit the group. Then add the real user to that
   # group so they retain full read/write access without needing sudo.
-  chown -R "$SERVICE_USER:$SERVICE_USER" "$SVC_DATA_DIR" "$SVC_WORKSPACE_ROOT"
-  chmod -R 2770 "$SVC_DATA_DIR" "$SVC_WORKSPACE_ROOT"
+  chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$WORKSPACE_ROOT"
+  chmod -R 2770 "$DATA_DIR" "$WORKSPACE_ROOT"
   if [[ -n "${SUDO_USER:-}" ]]; then
     usermod -aG "$SERVICE_USER" "$SUDO_USER"
     echo "  Added '${SUDO_USER}' to the '${SERVICE_USER}' group."
     warn "Log out and back in (or run: newgrp ${SERVICE_USER}) for group membership to take effect."
   fi
-  echo "  ${SVC_DATA_DIR}"
-  echo "  ${SVC_WORKSPACE_ROOT}"
+  echo "  ${DATA_DIR}"
+  echo "  ${WORKSPACE_ROOT}"
 
   info "Writing environment file to ${ENV_DEST}"
   cat > "$ENV_DEST" <<ENV
@@ -314,16 +305,37 @@ UNIT
   info "Service installed and started."
   echo "  Status: sudo systemctl status tdmclaw"
   echo "  Logs:   sudo journalctl -u tdmclaw -f"
+
+else
+  # --- Local dev install ---
+
+  info "Linking tdmclaw command"
+  npm link
+  echo "  'tdmclaw' is now available as a global command."
+
+  if [[ "${SKIP_CONFIG:-0}" != "1" ]]; then
+    info "Creating workspace and data directories"
+    mkdir -p "$WORKSPACE_ROOT" "$DATA_DIR"
+    # If running under sudo, give ownership to the real user.
+    if [[ -n "${SUDO_USER:-}" ]]; then
+      chown -R "$SUDO_USER:$SUDO_USER" "$WORKSPACE_ROOT" "$DATA_DIR"
+    fi
+    echo "  ${WORKSPACE_ROOT}"
+    echo "  ${DATA_DIR}"
+  fi
+
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Done
+# 7. Done
 # ---------------------------------------------------------------------------
 
 echo
 info "Done."
 echo
-echo "  To start:            tdmclaw"
-echo "  Development mode:    npm run dev"
+if [[ "$DEPLOY_SYSTEMD" -eq 0 ]]; then
+  echo "  To start:            tdmclaw"
+  echo "  Development mode:    npm run dev"
+fi
 echo "  Management CLI:      tdmclaw-cli --help"
 echo
