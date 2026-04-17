@@ -49,3 +49,4 @@ coverage/
 *.log
 npm-debug.log*
 dev.ps1
+config/jobs.test.json

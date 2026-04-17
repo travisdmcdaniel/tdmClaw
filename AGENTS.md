@@ -21,7 +21,7 @@ Use TypeScript with strict typing and 2-space indentation. Prefer named exports 
 Use Vitest for unit tests. Add tests next to the code they cover with `*.test.ts` filenames. Cover new parsing, config, tool, and Telegram-handling branches, and run `npm run test:run && npm run typecheck` before opening a PR. Prefer focused tests over broad integration scaffolding.
 
 ## Commit & Pull Request Guidelines
-Recent history uses short imperative subjects such as `Add CLI management tool and update documentation` and `Corrected errors found by typecheck`. Keep commits specific and descriptive. PRs should explain the behavioral change, mention any config or schema updates, link the relevant plan/TDD section, and include command output for verification when useful.
+Prefer Conventional Commit style with an explicit scope when possible: `type(scope): summary`. Recent examples include `feat(scheduler): implement job scheduling and management`, `feat(google): implement OAuth flow and client credential handling`, and `feat(calendar): consolidate event listing tools and enhance Gmail message retrieval`. Use lowercase `type`, keep the subject imperative, and choose scopes that match the subsystem you changed, such as `scheduler`, `google`, `calendar`, `telegram`, or `agent`. PRs should explain the behavioral change, mention any config or schema updates, link the relevant plan/TDD section, and include command output for verification when useful.
 
 ## Security & Configuration Tips
 Do not commit secrets. Use `config/config.yaml` for local settings and `.env`/`env:` references for credentials such as Telegram bot tokens. Treat uploaded OAuth credentials, SQLite data, and anything under the workspace root as sensitive.
