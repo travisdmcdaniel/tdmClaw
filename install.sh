@@ -231,6 +231,17 @@ if prompt_yn "Set up systemd service for deployment?" "n"; then
   cp -r "$SCRIPT_DIR/dist" "$SCRIPT_DIR/node_modules" "$INSTALL_DIR/"
   chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 
+  # Prompt for system-level data and workspace paths. The paths chosen during
+  # the config step above default to the invoking user's home directory, which
+  # the service user cannot write to. Offer writable locations under /var/lib.
+  prompt SVC_DATA_DIR \
+    "Service data directory (owned by ${SERVICE_USER})" \
+    "/var/lib/tdmclaw/data"
+
+  prompt SVC_WORKSPACE_ROOT \
+    "Service workspace directory (owned by ${SERVICE_USER})" \
+    "/var/lib/tdmclaw/workspace"
+
   CONFIG_DEST="/etc/tdmclaw/config.yaml"
   ENV_DEST="/etc/tdmclaw/tdmclaw.env"
   info "Installing config to ${CONFIG_DEST}"
@@ -238,9 +249,27 @@ if prompt_yn "Set up systemd service for deployment?" "n"; then
   cp "$CONFIG_FILE" "$CONFIG_DEST"
   # Replace the literal token with an env-ref so it does not live in the config file.
   sed -i "s|botToken: \"${BOT_TOKEN}\"|botToken: env:TDMCLAW_TELEGRAM_BOT_TOKEN|" "$CONFIG_DEST"
+  # Override data and workspace paths to service-writable locations.
+  sed -i "s|dataDir: ${DATA_DIR}|dataDir: ${SVC_DATA_DIR}|" "$CONFIG_DEST"
+  sed -i "s|root: ${WORKSPACE_ROOT}|root: ${SVC_WORKSPACE_ROOT}|" "$CONFIG_DEST"
   chown root:"$SERVICE_USER" /etc/tdmclaw "$CONFIG_DEST"
   chmod 750 /etc/tdmclaw
   chmod 640 "$CONFIG_DEST"
+
+  info "Creating service data and workspace directories"
+  mkdir -p "$SVC_DATA_DIR" "$SVC_WORKSPACE_ROOT"
+  # Set group ownership to the service user's group and enable the setgid bit so
+  # files created by the service inherit the group. Then add the real user to that
+  # group so they retain full read/write access without needing sudo.
+  chown -R "$SERVICE_USER:$SERVICE_USER" "$SVC_DATA_DIR" "$SVC_WORKSPACE_ROOT"
+  chmod -R 2770 "$SVC_DATA_DIR" "$SVC_WORKSPACE_ROOT"
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    usermod -aG "$SERVICE_USER" "$SUDO_USER"
+    echo "  Added '${SUDO_USER}' to the '${SERVICE_USER}' group."
+    warn "Log out and back in (or run: newgrp ${SERVICE_USER}) for group membership to take effect."
+  fi
+  echo "  ${SVC_DATA_DIR}"
+  echo "  ${SVC_WORKSPACE_ROOT}"
 
   info "Writing environment file to ${ENV_DEST}"
   cat > "$ENV_DEST" <<ENV
