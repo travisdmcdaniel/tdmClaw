@@ -66,6 +66,23 @@ fi
 
 echo "  Node.js $(node --version) — ok"
 
+# better-sqlite3 is a native addon and must be compiled from source on arm64
+# (no prebuilt binaries exist for recent Node versions). Fail early with a
+# clear message rather than letting node-gyp fail mid-install.
+if ! command -v make &>/dev/null || ! command -v gcc &>/dev/null; then
+  if [[ $EUID -eq 0 ]] && command -v apt-get &>/dev/null; then
+    warn "Build tools (make, gcc) not found. Installing build-essential..."
+    apt-get install -y build-essential
+    echo "  build-essential installed — ok"
+  else
+    die "Build tools are required to compile better-sqlite3 but were not found.
+  Run:  sudo apt-get install -y build-essential
+  Then re-run this installer."
+  fi
+else
+  echo "  Build tools (make, gcc) — ok"
+fi
+
 # ---------------------------------------------------------------------------
 # 2. Install npm dependencies
 # ---------------------------------------------------------------------------

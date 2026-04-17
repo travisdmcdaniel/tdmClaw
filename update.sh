@@ -25,7 +25,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_FILE="/etc/systemd/system/tdmclaw.service"
 
 # ---------------------------------------------------------------------------
-# 1. Pull latest changes
+# 1. Check build tools
+# ---------------------------------------------------------------------------
+
+info "Checking build tools"
+if ! command -v make &>/dev/null || ! command -v gcc &>/dev/null; then
+  if [[ $EUID -eq 0 ]] && command -v apt-get &>/dev/null; then
+    warn "Build tools (make, gcc) not found. Installing build-essential..."
+    apt-get install -y build-essential
+    echo "  build-essential installed — ok"
+  else
+    die "Build tools are required to compile native dependencies but were not found.
+  Run:  sudo apt-get install -y build-essential
+  Then re-run this script."
+  fi
+else
+  echo "  Build tools (make, gcc) — ok"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Pull latest changes
 # ---------------------------------------------------------------------------
 
 info "Pulling latest changes"
@@ -43,14 +62,14 @@ git pull
 echo
 
 # ---------------------------------------------------------------------------
-# 2. Install dependencies
+# 3. Install dependencies
 # ---------------------------------------------------------------------------
 
 info "Installing dependencies"
 npm install --prefer-offline 2>&1 | tail -3
 
 # ---------------------------------------------------------------------------
-# 3. Build
+# 4. Build
 # ---------------------------------------------------------------------------
 
 info "Building (tsc)"
@@ -58,7 +77,7 @@ npm run build
 echo "  Build complete → dist/"
 
 # ---------------------------------------------------------------------------
-# 4. Deploy: systemd or local
+# 5. Deploy: systemd or local
 # ---------------------------------------------------------------------------
 
 if [[ -f "$UNIT_FILE" ]]; then

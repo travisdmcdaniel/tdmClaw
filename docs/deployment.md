@@ -1,5 +1,18 @@
 # Deploying tdmClaw
 
+## Prerequisites
+
+- Node.js 22+
+- C/C++ build toolchain — `better-sqlite3` compiles from source on arm64 (no prebuilt binaries for recent Node versions on Linux/arm64):
+  ```bash
+  sudo apt-get install -y build-essential
+  ```
+- [Ollama](https://ollama.com/download/linux) installed and running with at least one model pulled
+
+`install.sh` will attempt to install `build-essential` automatically if it detects the toolchain is missing and is running as root. On a fresh Pi it is safest to install it beforehand.
+
+---
+
 ## Quick start (local / development)
 
 Run the interactive installer from the project root:
@@ -10,7 +23,7 @@ bash install.sh
 
 The installer will:
 
-1. Check that Node.js 22+ and npm are present.
+1. Check that Node.js 22+, npm, and the C/C++ build toolchain are present (installing `build-essential` automatically if running as root and the tools are missing).
 2. Run `npm install`.
 3. Prompt for the values needed to generate `config/config.yaml`:
    - Telegram bot token (from [@BotFather](https://t.me/BotFather))

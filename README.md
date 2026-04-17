@@ -15,6 +15,7 @@ A lightweight, self-hosted AI assistant designed to run continuously as a servic
 ## Requirements
 
 - Node.js 22+
+- C/C++ build toolchain — required to compile `better-sqlite3` from source on arm64 (no prebuilt binaries exist for recent Node versions on Linux/arm64). Install with: `sudo apt-get install -y build-essential`
 - [Ollama](https://ollama.ai) (or another OpenAI-compatible local model server)
 - A Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - Google Cloud project with OAuth credentials (for Gmail/Calendar features)
