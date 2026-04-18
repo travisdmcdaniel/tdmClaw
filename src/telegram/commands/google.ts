@@ -184,8 +184,7 @@ async function handleGoogleConnect(
       "3. Your browser will show an error page at 127.0.0.1 — this is expected.\n" +
       "4. Copy the full URL from your browser's address bar.\n" +
       "5. Send it back here with: /google_complete <paste the URL>\n\n" +
-      "_This link expires in 10 minutes._",
-    { parse_mode: "Markdown" }
+      "This link expires in 10 minutes."
   );
   // Send the URL as a separate message so it's easy to tap on mobile
   await ctx.reply(authUrl);
