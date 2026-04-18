@@ -43,6 +43,9 @@ models:
     - qwen3.5:2b
     - qwen3.5:0.8b
   requestTimeoutSeconds: 600
+  # Use streaming for model responses. Enable this if Ollama times out on long
+  # non-streaming requests (Ollama has a built-in 5-minute non-streaming timeout).
+  stream: false
   maxToolIterations: 10
   maxHistoryTurns: 6
   # Soft token hint for history trimming (informational only in v1)

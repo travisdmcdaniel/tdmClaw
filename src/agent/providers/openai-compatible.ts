@@ -75,14 +75,17 @@ export function createModelProvider(
         model,
         messages,
         temperature: input.temperature ?? 0.2,
-        stream: false,
+        stream: config.stream,
       };
       if (tools.length > 0) {
         body["tools"] = tools;
         body["tool_choice"] = "auto";
       }
+      if (config.stream) {
+        body["stream_options"] = { include_usage: true };
+      }
 
-      log.debug({ model, messageCount: messages.length, toolCount: tools.length }, "Calling model");
+      log.debug({ model, messageCount: messages.length, toolCount: tools.length, stream: config.stream }, "Calling model");
 
       const timeoutMs = config.requestTimeoutSeconds * 1000;
       const abort = new AbortController();
@@ -110,6 +113,10 @@ export function createModelProvider(
       if (!res.ok) {
         const errBody = await res.text().catch(() => "(unreadable)");
         throw new Error(`Model provider returned ${res.status}: ${errBody}`);
+      }
+
+      if (config.stream) {
+        return parseStreamingResponse(res);
       }
 
       const data = (await res.json()) as OpenAIResponse;
@@ -174,6 +181,95 @@ function buildMessages(input: ModelGenerateInput): OpenAIMessage[] {
     }
   }
   return out;
+}
+
+async function parseStreamingResponse(res: Response): Promise<ModelGenerateOutput> {
+  if (!res.body) throw new Error("Model returned empty streaming body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  let textContent = "";
+  // Tool call fields — only the first tool call is tracked (matching non-streaming behaviour)
+  let toolCallId = "";
+  let toolCallName = "";
+  let toolCallArgs = "";
+  let hasToolCall = false;
+  let promptTokens: number | undefined;
+  let completionTokens: number | undefined;
+
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    // Keep the last (potentially incomplete) line in the buffer
+    buffer = lines.pop() ?? "";
+
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6).trim();
+      if (payload === "[DONE]") break outer;
+
+      let chunk: {
+        choices?: Array<{
+          delta?: {
+            content?: string | null;
+            tool_calls?: Array<{
+              index?: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>;
+          };
+        }>;
+        usage?: { prompt_tokens: number; completion_tokens: number };
+      };
+      try {
+        chunk = JSON.parse(payload);
+      } catch {
+        continue;
+      }
+
+      const delta = chunk.choices?.[0]?.delta;
+      if (delta) {
+        if (delta.content) textContent += delta.content;
+        const tc = delta.tool_calls?.[0];
+        if (tc) {
+          hasToolCall = true;
+          if (tc.id) toolCallId = tc.id;
+          if (tc.function?.name) toolCallName += tc.function.name;
+          if (tc.function?.arguments) toolCallArgs += tc.function.arguments;
+        }
+      }
+      if (chunk.usage) {
+        promptTokens = chunk.usage.prompt_tokens;
+        completionTokens = chunk.usage.completion_tokens;
+      }
+    }
+  }
+
+  const usage =
+    promptTokens !== undefined && completionTokens !== undefined
+      ? { promptTokens, completionTokens }
+      : undefined;
+
+  if (hasToolCall) {
+    return {
+      kind: "tool_call",
+      id: toolCallId,
+      toolName: toolCallName,
+      argumentsJson: toolCallArgs,
+      usage,
+    };
+  }
+
+  return {
+    kind: "message",
+    text: textContent,
+    usage,
+  };
 }
 
 function buildTools(input: ModelGenerateInput): OpenAITool[] {
