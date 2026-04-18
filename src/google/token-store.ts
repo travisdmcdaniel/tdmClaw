@@ -73,7 +73,7 @@ export class GoogleTokenStore {
   async getAccessToken(): Promise<string> {
     const stored = this.readStored();
     if (!stored) {
-      throw new Error("No Google credentials. Run /google-connect to authorize.");
+      throw new Error("No Google credentials. Run /google_connect to authorize.");
     }
 
     // Return the stored token if it isn't near expiry
@@ -84,7 +84,7 @@ export class GoogleTokenStore {
     const creds = this.clientStore.read();
     if (!creds) {
       throw new Error(
-        "Google client credentials missing. Re-upload client_secret.json with /google-setup."
+        "Google client credentials missing. Re-upload client_secret.json with /google_setup."
       );
     }
 

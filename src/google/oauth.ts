@@ -83,7 +83,7 @@ export class GoogleOAuth {
     if (!data.refresh_token) {
       throw new Error(
         "Google did not return a refresh_token. " +
-          "Revoke app access at https://myaccount.google.com/permissions and try /google-connect again."
+          "Revoke app access at https://myaccount.google.com/permissions and try /google_connect again."
       );
     }
 

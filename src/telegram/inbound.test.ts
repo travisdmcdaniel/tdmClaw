@@ -26,7 +26,7 @@ describe("prepareInboundMessage", () => {
     const result = await prepareInboundMessage(
       {
         message: {
-          caption: "/google-setup",
+          caption: "/google_setup",
           document: { file_id: "doc-1", file_name: "client_secret.json" },
         },
       } as any,
@@ -35,7 +35,7 @@ describe("prepareInboundMessage", () => {
       { retention: { enabled: true } }
     );
 
-    expect(result).toEqual({ kind: "command", text: "/google-setup" });
+    expect(result).toEqual({ kind: "command", text: "/google_setup" });
   });
 
   it("saves supported text documents to the workspace and references the path", async () => {

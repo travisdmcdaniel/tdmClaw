@@ -49,7 +49,7 @@ export type GoogleToolDeps = {
  * in config and what backing subsystems are available.
  *
  * Google tools are evaluated dynamically in getDefinitions() so that
- * authorization completed via /google-connect takes effect on the very next
+ * authorization completed via /google_connect takes effect on the very next
  * agent turn without a service restart.
  */
 export function createToolRegistry(
